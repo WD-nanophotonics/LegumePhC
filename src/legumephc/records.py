@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path
 import uuid
@@ -34,8 +35,24 @@ def create_record(
     label = str(identity.get("operation", "run"))
     target = parent / f"{stamp}-{label}-{uuid.uuid4().hex[:8]}"
     target.mkdir()
-    _json(target / "config.json", {"identity": identity, "config": config})
+    canonical = json.dumps({"identity": identity, "config": config}, sort_keys=True, separators=(",", ":"))
+    record_identity = {**identity, "cache_identity": hashlib.sha256(canonical.encode("utf-8")).hexdigest()}
+    _json(target / "config.json", {"identity": record_identity, "config": config})
     _json(target / "summary.json", summary)
     np.savez_compressed(target / "arrays.npz", **arrays)
     (target / "figures").mkdir()
     return target
+
+
+def create_model_record(root, model, operation: str, config: dict, summary: dict, arrays: dict[str, np.ndarray]) -> Path:
+    """Write one immutable public-operation record for a Model2D instance."""
+
+    identity = {
+        "model": "Model2D",
+        "geometry": model.geometry.name,
+        "affine": {"linear": model.affine.linear.tolist(), "translation": model.affine.translation.tolist()},
+        "basis": model.identity["basis"],
+        "solver": "Legume.PlaneWaveExp",
+        "operation": operation,
+    }
+    return create_record(root, identity=identity, config=config, summary=summary, arrays=arrays)

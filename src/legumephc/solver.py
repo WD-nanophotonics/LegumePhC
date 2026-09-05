@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -8,9 +9,11 @@ import numpy as np
 from .geometry import (
     DIRECT_BASIS,
     GeometrySpec,
+    identity_path,
     point_group_operations,
     polygon_vertices,
 )
+from .records import create_model_record
 
 EIGENSOLVER_SHIFT = 1.0
 
@@ -24,10 +27,15 @@ def build_layer(spec: GeometrySpec, *, lattice=None):
     layer = legume.ShapesLayer(lattice, eps_b=spec.epsilon_background)
     for index, (center, radius) in enumerate(zip(spec.centers, spec.radii)):
         if spec.kind == "circle":
-            shape = legume.Circle(eps=spec.epsilon_inclusion, x_cent=float(center[0]), y_cent=float(center[1]), r=radius)
+            ellipse = spec.ellipse_parameters[index] if spec.ellipse_parameters else None
+            if ellipse is None:
+                shape = legume.Circle(eps=spec.epsilon_inclusion, x_cent=float(center[0]), y_cent=float(center[1]), r=radius)
+            else:
+                rx, ry, phi = ellipse
+                shape = legume.Ellipse(eps=spec.epsilon_inclusion, x_cent=float(center[0]), y_cent=float(center[1]), rx=rx, ry=ry, phi=phi)
         else:
             assert spec.sides is not None
-            vertices = polygon_vertices(radius, spec.sides[index], spec.angles_degrees[index], center)
+            vertices = polygon_vertices(radius, spec.sides[index], spec.angles_degrees[index], center) if spec.transformed_vertices is None else spec.transformed_vertices[index]
             shape = legume.Poly(eps=spec.epsilon_inclusion, x_edges=vertices[:, 0], y_edges=vertices[:, 1])
         layer.add_shape(shape)
     return lattice, layer
@@ -163,30 +171,77 @@ def solve_pwe_point_group_closed_basis(
     return result
 
 
-def solve_bands(model, qpoints: np.ndarray, *, gmax: float, numeig: int = 4, pol: str = "te") -> dict[str, Any]:
-    """Stable Model2D band API; basis policy selects one solver path."""
+def _record_solver_result(root, model, operation, config, summary, result):
+    arrays = {key: value for key, value in result.items() if isinstance(value, np.ndarray)}
+    return create_model_record(root, model, operation, config, summary, arrays)
+
+
+def solve_bands(
+    model,
+    qpoints: np.ndarray | None = None,
+    *,
+    path: str | None = None,
+    gmax: float,
+    numeig: int = 4,
+    pol: str = "te",
+    record_root: str | Path | None = None,
+) -> dict[str, Any]:
+    """Solve bands on explicit q points or the identity high-symmetry path."""
+
+    path_labels = None
+    if path is not None:
+        if path != "identity":
+            raise ValueError("only the identity Gamma high-symmetry path is supported")
+        path_labels, path_points = identity_path(model.effective_lattice)
+        if qpoints is not None and not np.allclose(qpoints, path_points):
+            raise ValueError("qpoints and path identify different band paths")
+        qpoints = path_points
+    elif qpoints is None:
+        path_labels, qpoints = identity_path(model.effective_lattice)
+    qpoints = np.asarray(qpoints, dtype=float)
 
     if model.basis_policy in {"native", "circular"} or model.point_group is None:
-        return solve_pwe(model.geometry, qpoints, gmax=gmax, numeig=numeig, pol=pol, lattice=model.lattice)
-    if model.point_group in {"C3", "C4"}:
+        result = solve_pwe(model.effective_geometry, qpoints, gmax=gmax, numeig=numeig, pol=pol, lattice=model.effective_lattice)
+    elif model.point_group in {"C3", "C4"}:
         operations = point_group_operations(model.point_group)
         if model.closure_qpoints is not None:
             closure_qpoints = model.closure_qpoints
         else:
-            seed = np.asarray(qpoints, dtype=float)[0]
+            seed = qpoints[0]
             closure_qpoints = np.asarray([operation @ seed for operation in operations])
-        return solve_pwe_point_group_closed_basis(
-            model.geometry, qpoints, seed_gmax=gmax, closure_qpoints=closure_qpoints,
-            linear_operations=operations, numeig=numeig, pol=pol, lattice=model.lattice,
+        result = solve_pwe_point_group_closed_basis(
+            model.effective_geometry, qpoints, seed_gmax=gmax, closure_qpoints=closure_qpoints,
+            linear_operations=operations, numeig=numeig, pol=pol, lattice=model.effective_lattice,
         )
-    return solve_pwe(model.geometry, qpoints, gmax=gmax, numeig=numeig, pol=pol, lattice=model.lattice)
+    else:
+        result = solve_pwe(model.effective_geometry, qpoints, gmax=gmax, numeig=numeig, pol=pol, lattice=model.effective_lattice)
+    result["qpoints"] = qpoints
+    result["path_labels"] = path_labels
+    result["gmax"] = float(gmax)
+    if record_root is not None:
+        _record_solver_result(
+            record_root, model, "solve_bands", {"gmax": gmax, "numeig": numeig, "pol": pol, "path": path},
+            {"status": "succeeded", "operation": "solve_bands", "path_labels": path_labels, "qpoint_count": len(qpoints), "polarization": pol.lower()}, result,
+        )
+    return result
 
 
-def frequency_at_k(model, kpoint: np.ndarray, *, gmax: float, band: int = 0, pol: str = "te") -> float:
+def frequency_at_k(
+    model, kpoint: np.ndarray, *, gmax: float, band: int = 0, pol: str = "te",
+    record_root: str | Path | None = None,
+) -> float:
     """Return one zero-based band frequency at a single Cartesian q point."""
 
-    result = solve_bands(model, np.asarray(kpoint, dtype=float).reshape(1, 2), gmax=gmax, numeig=max(4, band + 1), pol=pol)
-    return float(result["frequencies"][0, band])
+    point = np.asarray(kpoint, dtype=float).reshape(1, 2)
+    result = solve_bands(model, point, gmax=gmax, numeig=max(4, band + 1), pol=pol)
+    value = float(result["frequencies"][0, band])
+    if record_root is not None:
+        _record_solver_result(
+            record_root, model, "frequency_at_k", {"gmax": gmax, "band": band, "pol": pol, "kpoint": point.tolist()},
+            {"status": "succeeded", "operation": "frequency_at_k", "frequency": value, "band": band, "polarization": pol.lower()},
+            {"kpoint": point, "frequency": np.asarray([value])},
+        )
+    return value
 
 
 def solve_homogeneous_pwe(qpoints: np.ndarray, epsilon: float, *, gmax: float, numeig: int = 4, pol: str = "te") -> dict[str, Any]:

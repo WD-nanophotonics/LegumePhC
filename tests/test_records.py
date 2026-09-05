@@ -16,3 +16,5 @@ def test_run_directories_never_overwrite(tmp_path):
     assert (second / "summary.json").exists()
     identity = json.loads((first / "config.json").read_text(encoding="utf-8"))["identity"]
     assert set(("model", "geometry", "affine", "basis", "solver", "operation")) <= identity.keys()
+    second_identity = json.loads((second / "config.json").read_text(encoding="utf-8"))["identity"]
+    assert identity["cache_identity"] == second_identity["cache_identity"]

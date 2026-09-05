@@ -45,3 +45,10 @@ The stable domain surface is `Model2D`, `solve_bands`, and `frequency_at_k`.
 circular truncation is available as an explicit comparison control. The PWE
 eigensolver uses a documented `+1` numerical shift before subtracting it from
 the squared eigenvalues.
+
+Phase B adds `compute_field_observables` (gauge-invariant `E2`, `H2`, energy,
+and region ratios), `solve_efs` (frequency samples ready for iso-frequency
+contours), `solve_berry` (rank-1/composite Wilson qualification with raw
+unsymmetrized output), and `compute_berry_dipole` (geometric gradient and
+first moment). Dipole output becomes a physical response only when an
+explicit frequency window and occupation/response weight are supplied.

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
+import json
 
 import numpy as np
 
-from .geometry import Affine2D, GeometrySpec, Lattice2D, geometry_spec, m7_orbit, point_group_geometry_residual
+from .geometry import Affine2D, GeometrySpec, Lattice2D, geometry_spec, m7_orbit, point_group_geometry_residual, polygon_vertices
 
 
 @dataclass(frozen=True)
@@ -65,3 +67,50 @@ class Model2D:
             "unverified_point_group": self.unverified_point_group,
             "lattice": self.lattice.kind,
         }
+
+    @property
+    def effective_lattice(self) -> Lattice2D:
+        """Return the direct lattice after the model's affine transform."""
+
+        identity = np.allclose(self.affine.linear, np.eye(2))
+        kind = self.lattice.kind if identity else "custom"
+        return Lattice2D(self.affine.linear @ self.lattice.direct_basis, kind=kind)
+
+    @property
+    def effective_geometry(self) -> GeometrySpec:
+        """Return the motif after the same affine map used for the lattice."""
+
+        if np.allclose(self.affine.linear, np.eye(2)) and np.allclose(self.affine.translation, 0.0):
+            return self.geometry
+        ellipse_parameters: list[tuple[float, float, float] | None] = []
+        transformed_vertices: list[np.ndarray] = []
+        singular_vectors, singular_values, _ = np.linalg.svd(self.affine.linear)
+        phi = float(np.arctan2(singular_vectors[1, 0], singular_vectors[0, 0]))
+        for index, center in enumerate(self.geometry.centers):
+            if self.geometry.kind == "circle":
+                radius = self.geometry.radii[index]
+                ellipse_parameters.append((float(radius * singular_values[0]), float(radius * singular_values[1]), phi))
+            else:
+                assert self.geometry.sides is not None
+                source = polygon_vertices(self.geometry.radii[index], self.geometry.sides[index], self.geometry.angles_degrees[index], center)
+                transformed_vertices.append(self.affine.apply(source))
+                ellipse_parameters.append(None)
+        return GeometrySpec(
+            name=self.geometry.name,
+            kind=self.geometry.kind,
+            radii=self.geometry.radii,
+            sides=self.geometry.sides,
+            angles_degrees=self.geometry.angles_degrees,
+            strict_c3=False,
+            epsilon_background=self.geometry.epsilon_background,
+            epsilon_inclusion=self.geometry.epsilon_inclusion,
+            direct_basis=self.effective_lattice.direct_basis,
+            centers=self.affine.apply(self.geometry.centers),
+            ellipse_parameters=tuple(ellipse_parameters),
+            transformed_vertices=None if self.geometry.kind == "circle" else tuple(transformed_vertices),
+        )
+
+    @property
+    def cache_identity(self) -> str:
+        canonical = json.dumps(self.identity, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()

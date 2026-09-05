@@ -73,6 +73,8 @@ class GeometrySpec:
     epsilon_inclusion: float
     direct_basis: np.ndarray = field(default_factory=lambda: DIRECT_BASIS.copy())
     centers: np.ndarray = field(default_factory=lambda: SUBLATTICE_CENTERS.copy())
+    ellipse_parameters: tuple[tuple[float, float, float] | None, ...] = ()
+    transformed_vertices: tuple[np.ndarray, ...] | None = None
 
     def __post_init__(self) -> None:
         centers = np.asarray(self.centers, dtype=float)
@@ -82,7 +84,13 @@ class GeometrySpec:
             raise ValueError("polygon geometry requires one side count per motif radius")
         if len(self.angles_degrees) != len(self.radii):
             raise ValueError("angles_degrees must contain one angle per motif radius")
+        if self.ellipse_parameters and len(self.ellipse_parameters) != len(self.radii):
+            raise ValueError("ellipse_parameters must contain one entry per motif radius")
+        if self.transformed_vertices is not None and len(self.transformed_vertices) != len(self.radii):
+            raise ValueError("transformed_vertices must contain one entry per motif radius")
         object.__setattr__(self, "centers", centers)
+        if self.transformed_vertices is not None:
+            object.__setattr__(self, "transformed_vertices", tuple(np.asarray(vertices, dtype=float) for vertices in self.transformed_vertices))
 
 
 def geometry_spec(config: BenchmarkConfig, name: str) -> GeometrySpec:

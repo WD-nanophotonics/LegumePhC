@@ -4,6 +4,7 @@ import numpy as np
 from legumephc.config import load_benchmark
 from legumephc.geometry import (
     Affine2D,
+    GeometrySpec,
     Lattice2D,
     area_matched_radius,
     c3_geometry_residual,
@@ -12,9 +13,9 @@ from legumephc.geometry import (
     geometry_spec,
     identity_path,
     m7_orbit,
-    polygon_vertices,
     point_group_operations,
     point_group_geometry_residual,
+    polygon_vertices,
     square_circle_spec,
     strict_c3_by_construction,
 )
@@ -78,3 +79,25 @@ def test_lattice_paths_and_generic_affine_labels_are_honest():
     assert Model2D(square_circle_spec(), square).point_group == "C4"
     assert Model2D(geometry_spec(config, "G15"), square, unverified_point_group="C4").point_group is None
     assert Model2D.from_benchmark(config, "G15", affine=Affine2D(linear=np.array([[1.0, 0.2], [0.0, 1.0]]))).point_group is None
+    distorted = Model2D(square_circle_spec(), square, affine=Affine2D(linear=np.array([[1.0, 0.2], [0.0, 1.0]])))
+    assert distorted.point_group is None
+    assert distorted.effective_lattice.kind == "custom"
+    assert np.allclose(distorted.effective_lattice.direct_basis, distorted.affine.linear @ square.direct_basis)
+    effective = distorted.effective_geometry
+    assert np.allclose(effective.centers[0], distorted.affine.apply(square_circle_spec().centers)[0])
+    assert effective.ellipse_parameters[0] is not None
+    singular_values = np.linalg.svd(distorted.affine.linear, compute_uv=False)
+    assert np.allclose(effective.ellipse_parameters[0][:2], square_circle_spec().radii[0] * singular_values)
+    from legumephc.observables import _motif_mask
+    transformed_center = effective.centers[0]
+    inside = transformed_center + distorted.affine.linear @ np.array([0.9 * square_circle_spec().radii[0], 0.0])
+    outside = transformed_center + distorted.affine.linear @ np.array([1.1 * square_circle_spec().radii[0], 0.0])
+    assert _motif_mask(np.vstack((inside, outside)), effective, distorted.effective_lattice.direct_basis, 0).tolist() == [True, False]
+    polygon = GeometrySpec(
+        name="SquarePolygon", kind="polygon", radii=(0.1,), sides=(4,), angles_degrees=(0.0,),
+        strict_c3=False, epsilon_background=2.0, epsilon_inclusion=5.0,
+        direct_basis=np.eye(2), centers=np.array([[0.3, 0.4]]),
+    )
+    polygon_model = Model2D(polygon, square, affine=distorted.affine)
+    source_vertices = polygon_vertices(0.1, 4, 0.0, polygon.centers[0])
+    assert np.allclose(polygon_model.effective_geometry.transformed_vertices[0], polygon_model.affine.apply(source_vertices))
