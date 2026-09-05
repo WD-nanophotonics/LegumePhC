@@ -2,7 +2,21 @@ import math
 import numpy as np
 
 from legumephc.config import load_benchmark
-from legumephc.geometry import area_matched_radius, c3_geometry_residual, geometry_spec, m7_orbit, polygon_vertices, strict_c3_by_construction
+from legumephc.geometry import (
+    Affine2D,
+    Lattice2D,
+    area_matched_radius,
+    c3_geometry_residual,
+    first_bz_labels,
+    first_bz_vertices,
+    geometry_spec,
+    identity_path,
+    m7_orbit,
+    polygon_vertices,
+    point_group_operations,
+    strict_c3_by_construction,
+)
+from legumephc.model import Model2D
 
 
 def test_frozen_geometry_and_area_matching():
@@ -35,3 +49,25 @@ def test_legume_polygon_edges_are_counter_clockwise():
         - vertices[:, 1] * np.roll(vertices[:, 0], -1)
     )
     assert signed_area > 0
+
+
+def test_lattice_paths_and_generic_affine_labels_are_honest():
+    labels, points = identity_path(Lattice2D.triangular(), samples_per_segment=2)
+    assert labels == ("Gamma", "K", "M", "Gamma")
+    assert points.shape == (7, 2)
+    labels, points = identity_path(Lattice2D.square(), samples_per_segment=2)
+    assert labels == ("Gamma", "X", "M", "Gamma")
+    assert points.shape == (7, 2)
+    config = load_benchmark()
+    generic = Model2D.from_benchmark(
+        config, "G15", lattice=Lattice2D(Lattice2D.triangular().direct_basis, kind="custom"),
+        affine=Affine2D(linear=np.array([[1.0, 0.2], [0.0, 1.0]])),
+    )
+    assert generic.point_group is None
+    assert first_bz_labels(generic.lattice) == ("Gamma", "P1", "P2", "Gamma")
+    bz = first_bz_vertices(generic.lattice)
+    _, generic_path = identity_path(generic.lattice, samples_per_segment=2)
+    assert bz.shape[0] >= 4
+    assert np.isclose(np.linalg.norm(generic_path[-1]), 0.0)
+    assert len(point_group_operations("C3")) == 3
+    assert len(point_group_operations("C4")) == 4

@@ -123,7 +123,7 @@ def main() -> int:
     ax.set(xlabel="C3 orbit member", ylabel="frequency (c/a)")
     ax.legend()
     fig.tight_layout()
-    fig.savefig(target / "frequencies.png")
+    fig.savefig(target / "figures" / "frequencies.png")
     plt.close(fig)
     print(json.dumps({"result_directory": str(target), **summary}, indent=2))
     return 0
@@ -322,7 +322,7 @@ def run_pilot(
             ax.set(xlabel="center + C3 orbit point", ylabel="frequency (c/a)")
             ax.legend()
             fig.tight_layout()
-            fig.savefig(target / "frequencies.png")
+            fig.savefig(target / "figures" / "frequencies.png")
             plt.close(fig)
         all_summaries[case] = case_rows
     covariance_basis: dict[str, object] = {}
@@ -620,7 +620,7 @@ def run_bandpath(config, results_root: Path) -> int:
         axis.set_ylabel("frequency (c/a)")
         axis.legend()
     figure.tight_layout()
-    figure.savefig(target / "bandpath.png")
+    figure.savefig(target / "figures" / "bandpath.png")
     plt.close(figure)
     print(json.dumps({"result_directory": str(target), **report}, indent=2))
     return 0
@@ -727,7 +727,7 @@ def run_berry_map(config, results_root: Path) -> int:
         axis.set_xlabel("grid x")
         axis.set_ylabel("grid y")
     figure.tight_layout()
-    figure.savefig(target / "berry_map.png")
+    figure.savefig(target / "figures" / "berry_map.png")
     plt.close(figure)
     print(json.dumps({"result_directory": str(target), **report}, indent=2))
     return 0

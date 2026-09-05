@@ -258,32 +258,33 @@ def reciprocal_c3_map(
     }
 
 
-def c3_closed_reciprocal_basis(
+def point_group_orbit_closure(
     gvec: np.ndarray,
     qpoints: np.ndarray,
+    linear_operations: list[np.ndarray],
     *,
-    rotation_matrix: np.ndarray,
+    direct_basis: np.ndarray,
 ) -> np.ndarray:
-    """Construct the finite affine C3 closure of a seed reciprocal basis."""
+    """Construct a finite closure under a verified finite point group."""
 
-    from .geometry import DIRECT_BASIS
-
-    reciprocal_basis = np.linalg.inv(DIRECT_BASIS).T
+    reciprocal_basis = np.linalg.inv(np.asarray(direct_basis, dtype=float)).T
     reciprocal_inverse = np.linalg.inv(reciprocal_basis)
     seed = reciprocal_inverse @ (np.asarray(gvec, dtype=float) / (2.0 * math.pi))
     points = {tuple(np.rint(point).astype(int)) for point in seed.T}
     current = set(points)
     qpoints = np.asarray(qpoints, dtype=float)
-    rotation_in_basis = reciprocal_inverse @ np.asarray(rotation_matrix) @ reciprocal_basis
-    rotation_in_basis = np.rint(rotation_in_basis).astype(int)
-    for _ in range(3):
+    operations = [np.asarray(operation, dtype=float) for operation in linear_operations]
+    if not operations or len(operations) != len(qpoints):
+        raise ValueError("one q point is required for each point-group operation")
+    for _ in range(max(3, len(operations))):
         additions: set[tuple[float, float]] = set()
-        for index in range(3):
-            next_index = (index + 1) % 3
-            shift = reciprocal_inverse @ (qpoints[next_index] - np.asarray(rotation_matrix) @ qpoints[index])
+        for index, operation in enumerate(operations):
+            next_index = (index + 1) % len(qpoints)
+            shift = reciprocal_inverse @ (qpoints[next_index] - operation @ qpoints[index])
             shift = np.rint(shift).astype(int)
             for point in current:
-                transformed = rotation_in_basis @ np.asarray(point, dtype=int) - shift
+                operation_in_basis = np.rint(reciprocal_inverse @ operation @ reciprocal_basis).astype(int)
+                transformed = operation_in_basis @ np.asarray(point, dtype=int) - shift
                 additions.add(tuple(transformed.astype(int)))
         updated = current | additions
         if updated == current:
@@ -291,6 +292,22 @@ def c3_closed_reciprocal_basis(
         current = updated
     ordered = np.asarray(sorted(current), dtype=float).T
     return 2.0 * math.pi * reciprocal_basis @ ordered
+
+
+def c3_closed_reciprocal_basis(
+    gvec: np.ndarray,
+    qpoints: np.ndarray,
+    *,
+    rotation_matrix: np.ndarray,
+    direct_basis: np.ndarray | None = None,
+) -> np.ndarray:
+    """Construct the finite affine C3 closure of a seed reciprocal basis."""
+
+    from .geometry import DIRECT_BASIS
+    return point_group_orbit_closure(
+        gvec, qpoints, [np.asarray(rotation_matrix)] * len(qpoints),
+        direct_basis=DIRECT_BASIS if direct_basis is None else direct_basis,
+    )
 
 
 def operator_covariance_residual(

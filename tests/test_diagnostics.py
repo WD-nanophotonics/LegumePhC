@@ -2,10 +2,12 @@ import numpy as np
 
 from legumephc.diagnostics import (
     c3_closed_reciprocal_basis,
+    matrix_covariance_residual,
     projector_distance,
     rank1_wilson,
     rankn_wilson,
     reciprocal_c3_map,
+    point_group_orbit_closure,
     rotated_density_residual,
     scalar_field_density,
 )
@@ -107,3 +109,22 @@ def test_closed_reciprocal_basis_is_permuted_by_each_c3_step():
         )
         assert mapping["matched_count"] == closed.shape[1]
         assert len(set(mapping["indices"])) == closed.shape[1]
+
+
+def test_square_c4_closure_and_identity_operator_covariance():
+    transform = rotation(90.0)
+    q0 = np.array([0.2, 0.0])
+    qpoints = np.asarray([np.linalg.matrix_power(transform, i) @ q0 for i in range(4)])
+    seed = 2 * np.pi * np.asarray([[n1, n2] for n1 in (-1, 0, 1) for n2 in (-1, 0, 1)], dtype=float).T
+    closed = point_group_orbit_closure(
+        seed, qpoints, [transform] * 4, direct_basis=np.eye(2),
+    )
+    assert closed.shape[1] == seed.shape[1]
+    identity = np.eye(closed.shape[1])
+    for index in range(4):
+        mapping = reciprocal_c3_map(
+            closed, closed, qpoints[index], qpoints[(index + 1) % 4], rotation_matrix=transform,
+        )
+        assert mapping["matched_fraction"] == 1.0
+        assert len(set(mapping["indices"])) == closed.shape[1]
+        assert matrix_covariance_residual(identity, mapping) == 0.0

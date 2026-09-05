@@ -37,5 +37,11 @@ validation on that closed basis.
 independent 5×5 G15 rank-2 map with raw and C3-residual outputs.
 
 Every run creates a new directory under `results/`; existing results are never
-overwritten.  A run stores `config.json`, `summary.json`, `fields.npz`, and a
-small diagnostic figure.
+overwritten. A run stores `config.json` (including identity), `summary.json`,
+`arrays.npz`, legacy-readable `fields.npz`, and a `figures/` directory.
+
+The stable domain surface is `Model2D`, `solve_bands`, and `frequency_at_k`.
+`basis_policy="auto"` uses only verified finite C3/C4 closures; native or
+circular truncation is available as an explicit comparison control. The PWE
+eigensolver uses a documented `+1` numerical shift before subtracting it from
+the squared eigenvalues.
