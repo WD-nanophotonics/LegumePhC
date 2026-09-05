@@ -24,6 +24,7 @@ from legumephc.diagnostics import (
     relative_orbit_residual,
     rotated_density_residual,
     scalar_field_density,
+    te_scalar_field_densities,
 )
 from legumephc.geometry import DIRECT_BASIS, c3_geometry_residual, geometry_spec, m7_orbit, rotation
 from legumephc.records import create_run
@@ -40,6 +41,7 @@ def main() -> int:
     parser.add_argument("--operator-diagnosis", action="store_true", help="diagnose exact C3 closure of the PWE reciprocal basis")
     parser.add_argument("--gmax7", action="store_true", help="run only the strict-control gmax=7 extension")
     parser.add_argument("--closed-adapter", action="store_true", help="test a C3-closed reciprocal-basis adapter")
+    parser.add_argument("--closed-plaquette", action="store_true", help="run local Wilson and E/H scalars on a C3-closed basis")
     parser.add_argument("--results", type=Path, default=Path(__file__).resolve().parent / "results")
     args = parser.parse_args()
 
@@ -49,6 +51,8 @@ def main() -> int:
         return run_operator_diagnosis(config, args.results)
     if args.closed_adapter:
         return run_closed_adapter(config, args.results)
+    if args.closed_plaquette:
+        return run_closed_plaquette(config, args.results)
     if args.convergence:
         return run_pilot(config, args.results)
     if args.extension:
@@ -454,6 +458,86 @@ def run_closed_adapter(config, results_root: Path) -> int:
         "interpretation": "The adapter reconstructs the full Fourier epsilon matrix for an affine-C3-closed finite basis; Legume site-packages are unchanged.",
     }
     target = create_run(results_root, "pwe_c3_closed_basis_adapter", config.raw, report, {"qpoints_orbit": orbit})
+    print(json.dumps({"result_directory": str(target), **report}, indent=2))
+    return 0
+
+
+def run_closed_plaquette(config, results_root: Path) -> int:
+    """Run local Wilson and E/H scalar diagnostics on the closed basis."""
+
+    orbit = m7_orbit(config)
+    transform = rotation(120.0)
+    steps = [float(value) for value in config.raw["scan"]["berry_steps"]]
+    cases: dict[str, object] = {}
+    for case in ("G15", "Circle", "G16"):
+        spec = geometry_spec(config, case)
+        seed = solve_pwe(spec, orbit, gmax=5.0, numeig=4, pol=config.raw["polarization"])
+        closed_gvec = c3_closed_reciprocal_basis(seed["gvec"], orbit, rotation_matrix=transform)
+        center_result = solve_pwe_custom_basis(spec, orbit, closed_gvec, numeig=4, pol=config.raw["polarization"])
+        scalar_fields = te_scalar_field_densities(
+            center_result["eigenvectors"], center_result["frequencies"], center_result["gvec"],
+            center_result["eps_inv_mat"], orbit, basis=DIRECT_BASIS, grid_size=32,
+        )
+        scalar_residuals = {
+            key: np.max(rotated_density_residual(value, orbit, basis=DIRECT_BASIS, rotation_matrix=transform), axis=0).tolist()
+            for key, value in scalar_fields.items()
+        }
+        scalar_residuals["composite_23"] = float(np.max(rotated_density_residual(
+            (scalar_fields["H"][..., 1:3].sum(axis=-1))[..., None], orbit,
+            basis=DIRECT_BASIS, rotation_matrix=transform,
+        )))
+        step_summaries: dict[str, object] = {}
+        for step in steps:
+            plaquette, areas = _local_plaquette_points(orbit, step)
+            result = solve_pwe_custom_basis(spec, plaquette, closed_gvec, numeig=4, pol=config.raw["polarization"])
+            members = []
+            for member in range(3):
+                start = member * 4
+                local_frequencies = result["frequencies"][start:start + 4]
+                wilson = _wilson_summary(result, 4, target_band=1, offset=start)
+                numerical = qualification(
+                    local_frequencies,
+                    [wilson["rank1"]["min_link_magnitude"]],
+                    [wilson["rank2"]["min_singular_value"]],
+                    [wilson["rank1"]["branch_margin"]],
+                    [wilson["rank2"]["branch_margin"]],
+                )
+                members.append({
+                    "member": member,
+                    "signed_area": areas[member],
+                    "phase_density_rank1": wilson["rank1"]["phase"] / areas[member],
+                    "phase_density_rank2": wilson["rank2"]["phase"] / areas[member],
+                    "wilson": wilson,
+                    "association": {
+                        "rank1": {"min_link_magnitude": wilson["rank1"]["min_link_magnitude"], "qualified": wilson["rank1"]["min_link_magnitude"] > 0.1},
+                        "rank2": {"min_singular_value": wilson["rank2"]["min_singular_value"], "qualified": wilson["rank2"]["min_singular_value"] > 0.1},
+                    },
+                    "numerical_qualification": numerical,
+                })
+            step_summaries[str(step)] = {
+                "plaquette_point_count": 12,
+                "member_summaries": members,
+                "pairwise_c3_residual": {
+                    "rank1_phase_density_relative_residual": _pairwise_relative_residual([x["phase_density_rank1"] for x in members]),
+                    "rank2_phase_density_relative_residual": _pairwise_relative_residual([x["phase_density_rank2"] for x in members]),
+                    "rank1_link_relative_residual": _pairwise_relative_residual([x["wilson"]["rank1"]["min_link_magnitude"] for x in members]),
+                    "rank2_link_relative_residual": _pairwise_relative_residual([x["wilson"]["rank2"]["min_singular_value"] for x in members]),
+                },
+            }
+        cases[case] = {
+            "seed_gvec_count": int(seed["gvec"].shape[1]),
+            "closed_gvec_count": int(closed_gvec.shape[1]),
+            "scalar_c3_residual_grid32": scalar_residuals,
+            "berry_steps": step_summaries,
+        }
+    report = {
+        "status": "succeeded",
+        "mode": "pwe_c3_closed_local_plaquette",
+        "gmax_seed": 5.0,
+        "cases": cases,
+        "interpretation": "Closed-basis local plaquettes use normalized PWE eigenvectors; rank-1 is withheld whenever gap, association/link, or branch qualification fails.",
+    }
+    target = create_run(results_root, "pwe_c3_closed_local_plaquette", config.raw, report, {"qpoints_orbit": orbit})
     print(json.dumps({"result_directory": str(target), **report}, indent=2))
     return 0
 

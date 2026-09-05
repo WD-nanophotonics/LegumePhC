@@ -103,6 +103,57 @@ def composite_scalar_density(
     return np.sum(densities, axis=-1)
 
 
+def te_scalar_field_densities(
+    eigenvectors: np.ndarray,
+    frequencies: np.ndarray,
+    gvec: np.ndarray,
+    eps_inv_mat: np.ndarray,
+    qpoints: np.ndarray,
+    *,
+    basis: np.ndarray,
+    grid_size: int = 32,
+) -> dict[str, np.ndarray]:
+    """Evaluate normalized TE H, E, and electromagnetic-energy scalars."""
+
+    vectors = np.asarray(eigenvectors, dtype=complex)
+    frequencies = np.asarray(frequencies, dtype=float)
+    qpoints = np.asarray(qpoints, dtype=float)
+    gvec = np.asarray(gvec, dtype=float)
+    reciprocal = gvec / (2.0 * math.pi)
+    frac = np.stack(np.meshgrid(
+        np.arange(grid_size, dtype=float) / grid_size,
+        np.arange(grid_size, dtype=float) / grid_size,
+        indexing="xy",
+    ), axis=-1).reshape(-1, 2)
+    cart = frac @ np.asarray(basis, dtype=float).T
+    phases = np.exp(1j * np.einsum(
+        "kga,pa->kgp", 2.0 * math.pi * qpoints[:, None, :] + gvec.T[None, :, :], cart
+    ))
+    kplusg = 2.0 * math.pi * qpoints[:, None, :] + gvec.T[None, :, :]
+    norm = np.linalg.norm(kplusg, axis=-1)
+    px = kplusg[..., 0] / norm
+    py = kplusg[..., 1] / norm
+    qx, qy = py, -px
+    omega = 2.0 * math.pi * frequencies
+    d_x = 1j * vectors * qx[:, :, None] / omega[:, None, :]
+    d_y = 1j * vectors * qy[:, :, None] / omega[:, None, :]
+    e_x = np.einsum("ij,kjb->kib", np.asarray(eps_inv_mat), d_x)
+    e_y = np.einsum("ij,kjb->kib", np.asarray(eps_inv_mat), d_y)
+    h = np.einsum("kgp,kgb->kpb", phases, vectors)
+    dxf = np.einsum("kgp,kgb->kpb", phases, d_x)
+    dyf = np.einsum("kgp,kgb->kpb", phases, d_y)
+    exf = np.einsum("kgp,kgb->kpb", phases, e_x)
+    eyf = np.einsum("kgp,kgb->kpb", phases, e_y)
+    h_scalar = np.abs(h) ** 2
+    e_scalar = np.abs(exf) ** 2 + np.abs(eyf) ** 2
+    energy_scalar = 0.5 * (np.real(np.conj(exf) * dxf + np.conj(eyf) * dyf) + h_scalar)
+    result = {"H": h_scalar, "E": e_scalar, "energy": energy_scalar}
+    for value in result.values():
+        value /= np.mean(value, axis=1, keepdims=True)
+    shape = (len(qpoints), grid_size, grid_size, vectors.shape[-1])
+    return {key: value.reshape(shape) for key, value in result.items()}
+
+
 def rotated_density_residual(
     densities: np.ndarray,
     qpoints: np.ndarray,
