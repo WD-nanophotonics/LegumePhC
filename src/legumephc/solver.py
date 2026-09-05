@@ -54,6 +54,53 @@ def solve_pwe(spec: GeometrySpec, qpoints: np.ndarray, *, gmax: float, numeig: i
     }
 
 
+def solve_pwe_custom_basis(
+    spec: GeometrySpec,
+    qpoints: np.ndarray,
+    gvec: np.ndarray,
+    *,
+    numeig: int = 4,
+    pol: str = "te",
+) -> dict[str, Any]:
+    """Standalone PWE solve for an explicitly supplied reciprocal basis.
+
+    Legume's built-in basis is rectangular in reciprocal indices and is not
+    C3 closed.  This small adapter reconstructs the Fourier epsilon matrix
+    for an arbitrary finite basis, without modifying Legume itself.
+    """
+
+    import legume
+
+    _, layer = build_layer(spec)
+    gvec = np.asarray(gvec, dtype=float)
+    differences = gvec[:, :, None] - gvec[:, None, :]
+    eps_matrix = layer.compute_ft(differences.reshape(2, -1)).reshape(gvec.shape[1], gvec.shape[1])
+    eps_inv_mat = np.linalg.inv(eps_matrix)
+    kpoints = q_to_legume_k(qpoints).T
+    frequencies = []
+    eigenvectors = []
+    for k in kpoints.T:
+        if pol.lower() != "te":
+            raise ValueError("the custom adapter currently supports TE only")
+        kplusg = k[:, None] + gvec
+        matrix = (kplusg.T @ kplusg) * eps_inv_mat
+        freq2, evecs = np.linalg.eigh(matrix + np.eye(matrix.shape[0]))
+        freq = np.sqrt(np.abs(freq2 - 1.0)) / (2.0 * np.pi)
+        order = np.argsort(freq)[:numeig]
+        frequencies.append(freq[order])
+        eigenvectors.append(evecs[:, order])
+    return {
+        "frequencies": np.asarray(frequencies),
+        "eigenvectors": np.asarray(eigenvectors),
+        "gvec": gvec,
+        "eps_matrix": eps_matrix,
+        "eps_inv_mat": eps_inv_mat,
+        "kpoints_cartesian": kpoints.T,
+        "polarization": pol.lower(),
+        "legume_version": getattr(legume, "__version__", "unknown"),
+    }
+
+
 def solve_homogeneous_pwe(qpoints: np.ndarray, epsilon: float, *, gmax: float, numeig: int = 4, pol: str = "te") -> dict[str, Any]:
     import legume
 

@@ -18,11 +18,16 @@ py -3.12 -m venv .venv
 .venv\Scripts\python.exe run_c3_crosscheck.py --smoke --case G15 --gmax 2
 .venv\Scripts\python.exe run_c3_crosscheck.py --convergence
 .venv\Scripts\python.exe run_c3_crosscheck.py --extension
+.venv\Scripts\python.exe run_c3_crosscheck.py --operator-diagnosis
+.venv\Scripts\python.exe run_c3_crosscheck.py --closed-adapter
 ```
 
 `--convergence` runs the three-geometry `gmax=2,3,4,5` pilot with local
 four-corner plaquettes, density/projector covariance, and Wilson diagnostics.
 `--extension` runs the strict G15 and Circle controls through `gmax=6`.
+`--operator-diagnosis` quantifies affine-C3 reciprocal-basis closure, and
+`--closed-adapter` tests a standalone C3-closed Fourier basis without editing
+Legume's installed package.
 
 Every run creates a new directory under `results/`; existing results are never
 overwritten.  A run stores `config.json`, `summary.json`, `fields.npz`, and a

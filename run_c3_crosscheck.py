@@ -13,7 +13,9 @@ import numpy as np
 from legumephc.config import load_benchmark
 from legumephc.diagnostics import (
     qualification,
+    c3_closed_reciprocal_basis,
     operator_covariance_residual,
+    matrix_covariance_residual,
     rank1_wilson,
     rankn_wilson,
     reciprocal_c3_map,
@@ -25,7 +27,7 @@ from legumephc.diagnostics import (
 )
 from legumephc.geometry import DIRECT_BASIS, c3_geometry_residual, geometry_spec, m7_orbit, rotation
 from legumephc.records import create_run
-from legumephc.solver import homogeneous_shell_frequencies, solve_homogeneous_pwe, solve_pwe
+from legumephc.solver import homogeneous_shell_frequencies, solve_homogeneous_pwe, solve_pwe, solve_pwe_custom_basis
 
 
 def main() -> int:
@@ -37,6 +39,7 @@ def main() -> int:
     parser.add_argument("--extension", action="store_true", help="extend strict controls through gmax=6")
     parser.add_argument("--operator-diagnosis", action="store_true", help="diagnose exact C3 closure of the PWE reciprocal basis")
     parser.add_argument("--gmax7", action="store_true", help="run only the strict-control gmax=7 extension")
+    parser.add_argument("--closed-adapter", action="store_true", help="test a C3-closed reciprocal-basis adapter")
     parser.add_argument("--results", type=Path, default=Path(__file__).resolve().parent / "results")
     args = parser.parse_args()
 
@@ -44,6 +47,8 @@ def main() -> int:
     qpoints = m7_orbit(config)
     if args.operator_diagnosis:
         return run_operator_diagnosis(config, args.results)
+    if args.closed_adapter:
+        return run_closed_adapter(config, args.results)
     if args.convergence:
         return run_pilot(config, args.results)
     if args.extension:
@@ -394,6 +399,61 @@ def run_operator_diagnosis(config, results_root: Path) -> int:
         "interpretation": "C3 map includes q_target - R q_source = R*K-K reciprocal shift; missing basis vectors are truncation-boundary evidence.",
     }
     target = create_run(results_root, "pwe_reciprocal_c3_operator_diagnosis", config.raw, report, {"qpoints_orbit": orbit})
+    print(json.dumps({"result_directory": str(target), **report}, indent=2))
+    return 0
+
+
+def run_closed_adapter(config, results_root: Path) -> int:
+    """Test a symmetry-closed finite basis without modifying site-packages."""
+
+    orbit = m7_orbit(config)
+    transform = rotation(120.0)
+    cases: dict[str, object] = {}
+    for case in ("G15", "Circle"):
+        spec = geometry_spec(config, case)
+        standard = solve_pwe(spec, orbit, gmax=5.0, numeig=4, pol=config.raw["polarization"])
+        closed_gvec = c3_closed_reciprocal_basis(standard["gvec"], orbit, rotation_matrix=transform)
+        adapted = solve_pwe_custom_basis(spec, orbit, closed_gvec, numeig=4, pol=config.raw["polarization"])
+        maps = []
+        operator_residuals = []
+        epsilon_residuals = []
+        projector_residuals = []
+        for index in range(3):
+            next_index = (index + 1) % 3
+            mapping = reciprocal_c3_map(
+                adapted["gvec"], adapted["gvec"], orbit[index], orbit[next_index],
+                rotation_matrix=transform, tolerance=1e-5,
+            )
+            maps.append({
+                "matched_fraction": mapping["matched_fraction"],
+                "maximum_matching_residual": mapping["maximum_matching_residual"],
+                "unmatched_vectors": mapping["unmatched_vectors"],
+            })
+            operator_residuals.append(operator_covariance_residual(
+                adapted["eps_inv_mat"], adapted["gvec"], orbit[index], orbit[next_index], mapping,
+            ))
+            epsilon_residuals.append(matrix_covariance_residual(adapted["eps_matrix"], mapping))
+            projector_residuals.append(reciprocal_basis_projector_residual(
+                adapted["eigenvectors"][index, :, 1:3], adapted["eigenvectors"][next_index, :, 1:3],
+                adapted["gvec"], adapted["gvec"], orbit[index], orbit[next_index], rotation_matrix=transform,
+            ))
+        cases[case] = {
+            "seed_gvec_count": int(standard["gvec"].shape[1]),
+            "closed_gvec_count": int(closed_gvec.shape[1]),
+            "frequency_c3_max_residual": max(relative_orbit_residual(adapted["frequencies"][:, band]) for band in range(4)),
+            "projector_rank2_max_residual": max(projector_residuals),
+            "operator_covariance_max_residual": max(operator_residuals),
+            "epsilon_matrix_covariance_max_residual": max(epsilon_residuals),
+            "transitions": maps,
+        }
+    report = {
+        "status": "succeeded",
+        "mode": "pwe_c3_closed_basis_adapter",
+        "gmax_seed": 5.0,
+        "cases": cases,
+        "interpretation": "The adapter reconstructs the full Fourier epsilon matrix for an affine-C3-closed finite basis; Legume site-packages are unchanged.",
+    }
+    target = create_run(results_root, "pwe_c3_closed_basis_adapter", config.raw, report, {"qpoints_orbit": orbit})
     print(json.dumps({"result_directory": str(target), **report}, indent=2))
     return 0
 

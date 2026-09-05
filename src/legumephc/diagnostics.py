@@ -207,6 +207,41 @@ def reciprocal_c3_map(
     }
 
 
+def c3_closed_reciprocal_basis(
+    gvec: np.ndarray,
+    qpoints: np.ndarray,
+    *,
+    rotation_matrix: np.ndarray,
+) -> np.ndarray:
+    """Construct the finite affine C3 closure of a seed reciprocal basis."""
+
+    from .geometry import DIRECT_BASIS
+
+    reciprocal_basis = np.linalg.inv(DIRECT_BASIS).T
+    reciprocal_inverse = np.linalg.inv(reciprocal_basis)
+    seed = reciprocal_inverse @ (np.asarray(gvec, dtype=float) / (2.0 * math.pi))
+    points = {tuple(np.rint(point).astype(int)) for point in seed.T}
+    current = set(points)
+    qpoints = np.asarray(qpoints, dtype=float)
+    rotation_in_basis = reciprocal_inverse @ np.asarray(rotation_matrix) @ reciprocal_basis
+    rotation_in_basis = np.rint(rotation_in_basis).astype(int)
+    for _ in range(3):
+        additions: set[tuple[float, float]] = set()
+        for index in range(3):
+            next_index = (index + 1) % 3
+            shift = reciprocal_inverse @ (qpoints[next_index] - np.asarray(rotation_matrix) @ qpoints[index])
+            shift = np.rint(shift).astype(int)
+            for point in current:
+                transformed = rotation_in_basis @ np.asarray(point, dtype=int) - shift
+                additions.add(tuple(transformed.astype(int)))
+        updated = current | additions
+        if updated == current:
+            break
+        current = updated
+    ordered = np.asarray(sorted(current), dtype=float).T
+    return 2.0 * math.pi * reciprocal_basis @ ordered
+
+
 def operator_covariance_residual(
     eps_inv_mat: np.ndarray,
     gvec: np.ndarray,
@@ -228,6 +263,18 @@ def operator_covariance_residual(
     permuted_target = target_mat[np.ix_(indices, indices)]
     scale = max(float(np.linalg.norm(source_mat)), np.finfo(float).eps)
     return float(np.linalg.norm(source_mat - permuted_target) / scale)
+
+
+def matrix_covariance_residual(matrix: np.ndarray, mapping: dict[str, object]) -> float | None:
+    """Compare a reciprocal-space matrix after a complete basis permutation."""
+
+    if not all(bool(value) for value in mapping["matched"]):
+        return None
+    matrix = np.asarray(matrix, dtype=complex)
+    indices = np.asarray(mapping["indices"], dtype=int)
+    permuted = matrix[np.ix_(indices, indices)]
+    scale = max(float(np.linalg.norm(matrix)), np.finfo(float).eps)
+    return float(np.linalg.norm(matrix - permuted) / scale)
 
 
 def qualification(

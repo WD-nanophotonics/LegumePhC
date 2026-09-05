@@ -1,6 +1,7 @@
 import numpy as np
 
 from legumephc.diagnostics import (
+    c3_closed_reciprocal_basis,
     projector_distance,
     rank1_wilson,
     rankn_wilson,
@@ -86,3 +87,23 @@ def test_reciprocal_c3_map_includes_m7_reciprocal_shift():
     assert result["matched_fraction"] == 1.0
     assert np.allclose(result["shift_reciprocal"], [1.0, -1 / np.sqrt(3)])
     assert result["maximum_matching_residual"] < 1e-12
+
+
+def test_closed_reciprocal_basis_is_permuted_by_each_c3_step():
+    q0 = np.array([0.4722222222222222, 0.0])
+    q1 = np.array([0.7638888888888888, -0.16839383310241256])
+    q2 = np.array([0.7638888888888888, 0.16839383310241256])
+    qpoints = np.asarray([q0, q1, q2])
+    reciprocal = np.linalg.inv(DIRECT_BASIS).T
+    seed = 2 * np.pi * reciprocal @ np.array([
+        [-1, 0, 1, -1, 0, 1],
+        [-1, -1, -1, 0, 0, 0],
+    ], dtype=float)
+    closed = c3_closed_reciprocal_basis(seed, qpoints, rotation_matrix=rotation(120.0))
+    for index in range(3):
+        mapping = reciprocal_c3_map(
+            closed, closed, qpoints[index], qpoints[(index + 1) % 3],
+            rotation_matrix=rotation(120.0),
+        )
+        assert mapping["matched_count"] == closed.shape[1]
+        assert len(set(mapping["indices"])) == closed.shape[1]
