@@ -25,6 +25,10 @@ from legumephc.studio.project import new_project
 ROOT = Path(__file__).resolve().parent
 FORBIDDEN_PROCESS_NAMES = ("wsl.exe", "meep", "mpb")
 FORBIDDEN_IMPORT_NAMES = ("wsl", "meep", "mpb")
+MATRIX_OPERATION_COUNT = 18
+DEFAULT_CYCLE_TIMEOUT_MINUTES = 15.0
+MAX_CYCLE_TIMEOUT_MINUTES = 60.0
+_LAST_CHILD_EVIDENCE: dict | None = None
 
 
 class MatrixFailure(RuntimeError):
@@ -56,9 +60,10 @@ def _process_snapshot() -> set[tuple[str, int]]:
     return snapshot
 
 
-def _process_check(baseline: set[tuple[str, int]]) -> dict:
+def _process_check(baseline: set[tuple[str, int]], allowed_processes: set[tuple[str, int]] | None = None) -> dict:
     current = _process_snapshot()
-    introduced = sorted(name for name, pid in current - baseline if any(name == token or name == token.removesuffix(".exe") or token in name for token in FORBIDDEN_PROCESS_NAMES))
+    allowed = allowed_processes or set()
+    introduced = sorted(name for name, pid in current - baseline - allowed if any(name == token or name == token.removesuffix(".exe") or token in name for token in FORBIDDEN_PROCESS_NAMES))
     if introduced:
         raise RuntimeError(f"forbidden process launched by harness: {introduced}")
     baseline_forbidden = sorted(name for name, pid in baseline if any(name == token or name == token.removesuffix(".exe") or token in name for token in FORBIDDEN_PROCESS_NAMES))
@@ -120,7 +125,7 @@ def _preview_case(model_name: str) -> dict:
 
 def _run_matrix(run_dir: Path, gmax: float = 2.0, index_offset: int = 0, process_baseline: set[tuple[str, int]] | None = None) -> list[dict]:
     records = run_dir / "records"
-    records.mkdir(parents=True)
+    records.mkdir(parents=True, exist_ok=True)
     models = _models()
     orbit = m7_orbit(load_benchmark())
     square_q = np.asarray([[0.2, 0.07], [-0.07, 0.2], [-0.2, -0.07], [0.07, -0.2]])
@@ -176,15 +181,110 @@ def _run_matrix(run_dir: Path, gmax: float = 2.0, index_offset: int = 0, process
             else:
                 metadata = {"value": float(value)}
             process_after = _process_check(process_baseline or set())
-            result = {"index": index, "name": name, "started": started, "ended": _now(), "duration_seconds": time.monotonic() - started_monotonic, "status": "pass", "result_identity": identity, "metadata": metadata, "process_check": process_after}
+            result = {"index": index_offset + index, "name": name, "started": started, "ended": _now(), "duration_seconds": time.monotonic() - started_monotonic, "status": "pass", "result_identity": identity, "metadata": metadata, "process_check": process_after}
         except Exception as exc:
-            result = {"index": index, "name": name, "started": started, "ended": _now(), "duration_seconds": time.monotonic() - started_monotonic, "status": "fail", "error": f"{type(exc).__name__}: {exc}", "process_check": _process_check(process_baseline or set())}
+            result = {"index": index_offset + index, "name": name, "started": started, "ended": _now(), "duration_seconds": time.monotonic() - started_monotonic, "status": "fail", "error": f"{type(exc).__name__}: {exc}", "process_check": _process_check(process_baseline or set())}
             results.append(result)
             _write_once(run_dir / "operations" / f"{index_offset + index:05d}-{name}.json", result)
             raise MatrixFailure(f"{type(exc).__name__}: {exc}", results) from exc
         results.append(result)
         _write_once(run_dir / "operations" / f"{index_offset + index:05d}-{name}.json", result)
     return results
+
+
+def _cycle_result_path(run_dir: Path, cycle_index: int) -> Path:
+    return run_dir / "cycle-results" / f"{cycle_index:05d}.json"
+
+
+def _run_matrix_child(run_dir: Path, gmax: float, index_offset: int, cycle_index: int) -> int:
+    cycle_result_path = _cycle_result_path(run_dir, cycle_index)
+    cycle_result_path.parent.mkdir(parents=True, exist_ok=True)
+    results: list[dict] = []
+    error = None
+    try:
+        results = _run_matrix(run_dir, gmax=gmax, index_offset=index_offset, process_baseline=_process_snapshot())
+        status = "pass"
+    except MatrixFailure as exc:
+        results = exc.results
+        error = str(exc)
+        status = "fail"
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {exc}"
+        status = "fail"
+    cycle_result = {
+        "cycle": cycle_index,
+        "child_pid": os.getpid(),
+        "status": status,
+        "operation_count": len(results),
+        "results": results,
+        "error": error,
+    }
+    _write_once(cycle_result_path, cycle_result)
+    print(json.dumps({"cycle": cycle_index, "child_pid": os.getpid(), "status": status, "operation_count": len(results), "cycle_result": str(cycle_result_path)}, separators=(",", ":"), sort_keys=True))
+    return 0 if status == "pass" else 1
+
+
+def _run_matrix_isolated(run_dir: Path, gmax: float = 2.0, index_offset: int = 0, process_baseline: set[tuple[str, int]] | None = None, cycle_timeout_minutes: float = DEFAULT_CYCLE_TIMEOUT_MINUTES, _popen_fn=subprocess.Popen) -> list[dict]:
+    global _LAST_CHILD_EVIDENCE
+    if not 0 < cycle_timeout_minutes <= MAX_CYCLE_TIMEOUT_MINUTES:
+        raise ValueError(f"cycle_timeout_minutes must be greater than 0 and at most {MAX_CYCLE_TIMEOUT_MINUTES:g}")
+    records = run_dir / "records"
+    records.mkdir(parents=True, exist_ok=True)
+    cycle_index = index_offset // MATRIX_OPERATION_COUNT + 1
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--matrix-child",
+        "--run-dir",
+        str(run_dir),
+        "--gmax",
+        f"{gmax:.17g}",
+        "--index-offset",
+        str(index_offset),
+        "--cycle-index",
+        str(cycle_index),
+    ]
+    child = _popen_fn(command, cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    child_names = {Path(sys.executable).name.lower(), Path(sys.executable).stem.lower()}
+    allowed_child = {(name, child.pid) for name in child_names}
+    stdout = ""
+    stderr = ""
+    timed_out = False
+    try:
+        _process_check(process_baseline or set(), allowed_processes=allowed_child)
+        try:
+            stdout, stderr = child.communicate(timeout=cycle_timeout_minutes * 60.0)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            child.terminate()
+            try:
+                stdout, stderr = child.communicate(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                stdout, stderr = child.communicate()
+    except BaseException:
+        if child.poll() is None:
+            child.kill()
+        stdout, stderr = child.communicate()
+        _LAST_CHILD_EVIDENCE = {"cycle": cycle_index, "child_pid": child.pid, "returncode": child.returncode, "timed_out": timed_out, "stdout": stdout, "stderr": stderr, "command": command}
+        raise
+    _LAST_CHILD_EVIDENCE = {"cycle": cycle_index, "child_pid": child.pid, "returncode": child.returncode, "timed_out": timed_out, "stdout": stdout, "stderr": stderr, "command": command, "cycle_result": str(_cycle_result_path(run_dir, cycle_index))}
+    if timed_out:
+        raise MatrixFailure(f"isolated matrix child timed out after {cycle_timeout_minutes:g} minutes", [])
+    try:
+        child_stdout = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise MatrixFailure(f"isolated matrix child emitted invalid stdout: {exc}", []) from exc
+    cycle_result_path = _cycle_result_path(run_dir, cycle_index)
+    cycle_result = json.loads(cycle_result_path.read_text(encoding="utf-8")) if cycle_result_path.exists() else {}
+    if child.returncode != 0 or child_stdout.get("status") != "pass" or cycle_result.get("status") != "pass":
+        results = cycle_result.get("results", [])
+        error = cycle_result.get("error") or f"isolated matrix child exited with code {child.returncode}"
+        raise MatrixFailure(error, results)
+    if child_stdout.get("child_pid") != cycle_result.get("child_pid") or child_stdout.get("operation_count") != len(cycle_result.get("results", [])):
+        raise MatrixFailure("isolated matrix child result identity is inconsistent", cycle_result.get("results", []))
+    _process_check(process_baseline or set())
+    return cycle_result["results"]
 
 
 def _record_integrity_check(run_dir: Path) -> dict:
@@ -211,11 +311,13 @@ def _wait_until(target: float, clock, sleeper) -> None:
         sleeper(min(60.0, remaining))
 
 
-def run_harness(*, duration_hours: float | None = None, cycles: int = 1, gmax: float = 2.0, _clock=time.monotonic, _sleeper=time.sleep, _matrix_runner=_run_matrix, _process_snapshot_fn=_process_snapshot, _process_check_fn=_process_check, _import_check_fn=_import_check, _run_dir: Path | None = None) -> Path:
+def run_harness(*, duration_hours: float | None = None, cycles: int = 1, gmax: float = 2.0, cycle_timeout_minutes: float = DEFAULT_CYCLE_TIMEOUT_MINUTES, _clock=time.monotonic, _sleeper=time.sleep, _matrix_runner=None, _process_snapshot_fn=_process_snapshot, _process_check_fn=_process_check, _import_check_fn=_import_check, _run_dir: Path | None = None) -> Path:
     if cycles < 1:
         raise ValueError("cycles must be at least 1")
     if duration_hours is not None and duration_hours <= 0:
         raise ValueError("duration_hours must be positive")
+    if not 0 < cycle_timeout_minutes <= MAX_CYCLE_TIMEOUT_MINUTES:
+        raise ValueError(f"cycle_timeout_minutes must be greater than 0 and at most {MAX_CYCLE_TIMEOUT_MINUTES:g}")
     run_dir = _run_dir or ROOT / "acceptance" / f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')}-{uuid.uuid4().hex[:8]}"
     (run_dir / "operations").mkdir(parents=True)
     started = _now()
@@ -227,6 +329,9 @@ def run_harness(*, duration_hours: float | None = None, cycles: int = 1, gmax: f
     interrupted = False
     process_baseline: set[tuple[str, int]] = set()
     import_check: dict = {"status": "not_run"}
+    global _LAST_CHILD_EVIDENCE
+    _LAST_CHILD_EVIDENCE = None
+    matrix_runner = _matrix_runner or (lambda run_dir, *, gmax, index_offset, process_baseline: _run_matrix_isolated(run_dir, gmax=gmax, index_offset=index_offset, process_baseline=process_baseline, cycle_timeout_minutes=cycle_timeout_minutes))
     deadline = None if duration_hours is None else started_monotonic + duration_hours * 3600.0
     try:
         process_baseline = _process_snapshot_fn()
@@ -239,14 +344,18 @@ def run_harness(*, duration_hours: float | None = None, cycles: int = 1, gmax: f
             cycle_started_monotonic = _clock()
             cycle_report = {"cycle": cycle_index + 1, "scheduled_offset_seconds": scheduled_offset, "started": cycle_started, "status": "running"}
             try:
-                cycle_results = _matrix_runner(run_dir, gmax=gmax, index_offset=len(all_results), process_baseline=process_baseline)
+                cycle_results = matrix_runner(run_dir, gmax=gmax, index_offset=len(all_results), process_baseline=process_baseline)
                 all_results.extend(cycle_results)
                 health = {"process": _process_check_fn(process_baseline), "imports": _import_check_fn(), "records": _record_integrity_check(run_dir)}
                 health_checks.append({"cycle": cycle_index + 1, "checked": _now(), **health})
                 cycle_report.update({"ended": _now(), "duration_seconds": _clock() - cycle_started_monotonic, "status": "pass", "operation_count": len(cycle_results), "health": health})
+                if _LAST_CHILD_EVIDENCE is not None:
+                    cycle_report["child"] = _LAST_CHILD_EVIDENCE
             except MatrixFailure as exc:
                 all_results.extend(exc.results)
                 cycle_report.update({"ended": _now(), "duration_seconds": _clock() - cycle_started_monotonic, "status": "fail", "operation_count": len(exc.results), "error": str(exc)})
+                if _LAST_CHILD_EVIDENCE is not None:
+                    cycle_report["child"] = _LAST_CHILD_EVIDENCE
                 cycle_reports.append(cycle_report)
                 error = str(exc)
                 break
@@ -299,8 +408,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--gmax", type=float, default=2.0)
     parser.add_argument("--cycles", type=int, default=1, help="number of fixed matrices to run")
     parser.add_argument("--duration-hours", type=float, default=None, help="schedule the fixed cycles across this duration and health-check between cycles")
+    parser.add_argument("--cycle-timeout-minutes", type=float, default=DEFAULT_CYCLE_TIMEOUT_MINUTES, help="maximum runtime for each isolated matrix child")
+    parser.add_argument("--matrix-child", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--run-dir", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--index-offset", type=int, default=0, help=argparse.SUPPRESS)
+    parser.add_argument("--cycle-index", type=int, default=1, help=argparse.SUPPRESS)
     arguments = parser.parse_args(argv)
-    run_harness(duration_hours=arguments.duration_hours, cycles=arguments.cycles, gmax=arguments.gmax)
+    if arguments.matrix_child:
+        if arguments.run_dir is None:
+            parser.error("--matrix-child requires --run-dir")
+        return _run_matrix_child(arguments.run_dir, arguments.gmax, arguments.index_offset, arguments.cycle_index)
+    run_harness(duration_hours=arguments.duration_hours, cycles=arguments.cycles, gmax=arguments.gmax, cycle_timeout_minutes=arguments.cycle_timeout_minutes)
     return 0
 
 
