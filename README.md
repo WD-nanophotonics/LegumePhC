@@ -21,6 +21,8 @@ py -3.12 -m venv .venv
 .venv\Scripts\python.exe run_c3_crosscheck.py --operator-diagnosis
 .venv\Scripts\python.exe run_c3_crosscheck.py --closed-adapter
 .venv\Scripts\python.exe run_c3_crosscheck.py --closed-plaquette
+.venv\Scripts\python.exe run_c3_crosscheck.py --bandpath
+.venv\Scripts\python.exe run_c3_crosscheck.py --berry-map
 ```
 
 `--convergence` runs the three-geometry `gmax=2,3,4,5` pilot with local
@@ -31,6 +33,8 @@ four-corner plaquettes, density/projector covariance, and Wilson diagnostics.
 Legume's installed package.
 `--closed-plaquette` performs the local Wilson and TE H/E/energy scalar
 validation on that closed basis.
+`--bandpath` compares the G15 Γ–K–M–Γ path, and `--berry-map` samples an
+independent 5×5 G15 rank-2 map with raw and C3-residual outputs.
 
 Every run creates a new directory under `results/`; existing results are never
 overwritten.  A run stores `config.json`, `summary.json`, `fields.npz`, and a

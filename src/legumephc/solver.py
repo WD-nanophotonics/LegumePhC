@@ -101,6 +101,30 @@ def solve_pwe_custom_basis(
     }
 
 
+def solve_pwe_closed_basis(
+    spec: GeometrySpec,
+    qpoints: np.ndarray,
+    *,
+    seed_gmax: float,
+    closure_qpoints: np.ndarray,
+    numeig: int = 4,
+    pol: str = "te",
+) -> dict[str, Any]:
+    """Solve with the validated affine-C3 closure of one seed Legume basis."""
+
+    from .diagnostics import c3_closed_reciprocal_basis
+    seed = solve_pwe(spec, closure_qpoints, gmax=seed_gmax, numeig=numeig, pol=pol)
+    closed_gvec = c3_closed_reciprocal_basis(
+        seed["gvec"], closure_qpoints,
+        rotation_matrix=np.array([[np.cos(2 * np.pi / 3), -np.sin(2 * np.pi / 3)],
+                                  [np.sin(2 * np.pi / 3), np.cos(2 * np.pi / 3)]]),
+    )
+    result = solve_pwe_custom_basis(spec, qpoints, closed_gvec, numeig=numeig, pol=pol)
+    result["seed_gvec_count"] = int(seed["gvec"].shape[1])
+    result["closed_gvec_count"] = int(closed_gvec.shape[1])
+    return result
+
+
 def solve_homogeneous_pwe(qpoints: np.ndarray, epsilon: float, *, gmax: float, numeig: int = 4, pol: str = "te") -> dict[str, Any]:
     import legume
 

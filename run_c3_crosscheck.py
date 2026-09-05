@@ -28,7 +28,13 @@ from legumephc.diagnostics import (
 )
 from legumephc.geometry import DIRECT_BASIS, c3_geometry_residual, geometry_spec, m7_orbit, rotation
 from legumephc.records import create_run
-from legumephc.solver import homogeneous_shell_frequencies, solve_homogeneous_pwe, solve_pwe, solve_pwe_custom_basis
+from legumephc.solver import (
+    homogeneous_shell_frequencies,
+    solve_homogeneous_pwe,
+    solve_pwe,
+    solve_pwe_closed_basis,
+    solve_pwe_custom_basis,
+)
 
 
 def main() -> int:
@@ -42,6 +48,8 @@ def main() -> int:
     parser.add_argument("--gmax7", action="store_true", help="run only the strict-control gmax=7 extension")
     parser.add_argument("--closed-adapter", action="store_true", help="test a C3-closed reciprocal-basis adapter")
     parser.add_argument("--closed-plaquette", action="store_true", help="run local Wilson and E/H scalars on a C3-closed basis")
+    parser.add_argument("--bandpath", action="store_true", help="compare G15 Gamma-K-M-Gamma default and closed-basis paths")
+    parser.add_argument("--berry-map", action="store_true", help="sample an independent G15 rank-2 Berry map")
     parser.add_argument("--results", type=Path, default=Path(__file__).resolve().parent / "results")
     args = parser.parse_args()
 
@@ -53,6 +61,10 @@ def main() -> int:
         return run_closed_adapter(config, args.results)
     if args.closed_plaquette:
         return run_closed_plaquette(config, args.results)
+    if args.bandpath:
+        return run_bandpath(config, args.results)
+    if args.berry_map:
+        return run_berry_map(config, args.results)
     if args.convergence:
         return run_pilot(config, args.results)
     if args.extension:
@@ -538,6 +550,185 @@ def run_closed_plaquette(config, results_root: Path) -> int:
         "interpretation": "Closed-basis local plaquettes use normalized PWE eigenvectors; rank-1 is withheld whenever gap, association/link, or branch qualification fails.",
     }
     target = create_run(results_root, "pwe_c3_closed_local_plaquette", config.raw, report, {"qpoints_orbit": orbit})
+    print(json.dumps({"result_directory": str(target), **report}, indent=2))
+    return 0
+
+
+def _band_path(samples_per_segment: int = 5) -> np.ndarray:
+    gamma = np.array([0.0, 0.0])
+    k_point = np.array([2.0 / 3.0, 0.0])
+    m_point = np.array([0.5, 1.0 / (2.0 * np.sqrt(3.0))])
+    vertices = (gamma, k_point, m_point, gamma)
+    points: list[np.ndarray] = []
+    for start, end in zip(vertices[:-1], vertices[1:]):
+        points.extend(np.linspace(start, end, samples_per_segment, endpoint=False))
+    points.append(vertices[-1])
+    return np.asarray(points)
+
+
+def run_bandpath(config, results_root: Path) -> int:
+    """Compare the minimum Gamma-K-M-Gamma path in default and closed bases."""
+
+    orbit = m7_orbit(config)
+    path = _band_path(samples_per_segment=5)
+    qbatch = np.vstack((path, orbit))
+    rows: list[dict[str, object]] = []
+    previous_default = previous_closed = None
+    for gmax in (4.0, 5.0, 6.0):
+        spec = geometry_spec(config, "G15")
+        default = solve_pwe(spec, qbatch, gmax=gmax, numeig=4, pol=config.raw["polarization"])
+        closed = solve_pwe_closed_basis(
+            spec, qbatch, seed_gmax=gmax, closure_qpoints=orbit,
+            numeig=4, pol=config.raw["polarization"],
+        )
+        default_path = default["frequencies"][:len(path)]
+        closed_path = closed["frequencies"][:len(path)]
+        default_orbit = default["frequencies"][len(path):]
+        closed_orbit = closed["frequencies"][len(path):]
+        row = {
+            "gmax": gmax,
+            "path_qpoints": path.tolist(),
+            "default_path_frequencies": default_path.tolist(),
+            "closed_path_frequencies": closed_path.tolist(),
+            "max_default_closed_path_difference": float(np.max(np.abs(default_path - closed_path))),
+            "default_path_change_from_previous": None if previous_default is None else float(np.max(np.abs(default_path - previous_default))),
+            "closed_path_change_from_previous": None if previous_closed is None else float(np.max(np.abs(closed_path - previous_closed))),
+            "default_m7_c3_residual": max(relative_orbit_residual(default_orbit[:, band]) for band in range(4)),
+            "closed_m7_c3_residual": max(relative_orbit_residual(closed_orbit[:, band]) for band in range(4)),
+            "closed_basis_counts": {"seed": closed["seed_gvec_count"], "closed": closed["closed_gvec_count"]},
+        }
+        rows.append(row)
+        previous_default, previous_closed = default_path, closed_path
+    report = {
+        "status": "succeeded",
+        "mode": "pwe_g15_bandpath_default_vs_closed",
+        "case": "G15",
+        "samples_per_segment": 5,
+        "path": "Gamma-K-M-Gamma",
+        "rows": rows,
+        "closed_pilot_gate": "closed M7 C3 residual < 1e-6 for all tested gmax",
+    }
+    target = create_run(results_root, "pwe_g15_bandpath_default_vs_closed", config.raw, report, {"path_qpoints": path})
+    figure, axes = plt.subplots(1, 2, figsize=(9, 3.5), dpi=120)
+    for row in rows:
+        axes[0].plot(np.arange(len(path)), np.asarray(row["default_path_frequencies"])[:, 1], marker="o", label=f"default g{row['gmax']}")
+        axes[1].plot(np.arange(len(path)), np.asarray(row["closed_path_frequencies"])[:, 1], marker="o", label=f"closed g{row['gmax']}")
+    axes[0].set_title("G15 band 2 default")
+    axes[1].set_title("G15 band 2 closed basis")
+    for axis in axes:
+        axis.set_xlabel("Γ–K–M–Γ sample")
+        axis.set_ylabel("frequency (c/a)")
+        axis.legend()
+    figure.tight_layout()
+    figure.savefig(target / "bandpath.png")
+    plt.close(figure)
+    print(json.dumps({"result_directory": str(target), **report}, indent=2))
+    return 0
+
+
+def _map_grid(center: np.ndarray, size: int = 5, span: float = 0.1) -> np.ndarray:
+    offsets = np.linspace(-span, span, size)
+    return np.asarray([center + np.array([x, y]) for y in offsets for x in offsets])
+
+
+def _unique_points(points: list[np.ndarray]) -> np.ndarray:
+    unique: dict[tuple[float, float], np.ndarray] = {}
+    for point in points:
+        unique[tuple(np.round(point, 12))] = point
+    return np.asarray(list(unique.values()))
+
+
+def _berry_map_for_result(result: dict, grid: np.ndarray, solved_points: np.ndarray, *, basis: np.ndarray) -> dict[str, object]:
+    index = {tuple(np.round(point, 12)): i for i, point in enumerate(solved_points)}
+    frequencies = result["frequencies"]
+    vectors = result["eigenvectors"]
+    size = int(np.sqrt(len(grid)))
+    rank2_phase = []
+    rank1_phase = []
+    quality = []
+    for iy in range(size - 1):
+        for ix in range(size - 1):
+            corners = [
+                grid[iy * size + ix],
+                grid[iy * size + ix + 1],
+                grid[(iy + 1) * size + ix + 1],
+                grid[(iy + 1) * size + ix],
+            ]
+            indices = [index[tuple(np.round(point, 12))] for point in corners]
+            local_rank1 = rank1_wilson([vectors[i, :, 1] for i in indices])
+            local_rank2 = rankn_wilson([vectors[i, :, 1:3] for i in indices])
+            dx = corners[1] - corners[0]
+            dy = corners[3] - corners[0]
+            area = float(dx[0] * dy[1] - dx[1] * dy[0])
+            numerical = qualification(
+                frequencies[indices],
+                [local_rank1["min_link_magnitude"]],
+                [local_rank2["min_singular_value"]],
+                [local_rank1["branch_margin"]],
+                [local_rank2["branch_margin"]],
+            )
+            rank2_phase.append({"iy": iy, "ix": ix, "signed_area": area, "phase": local_rank2["phase"], "phase_density": local_rank2["phase"] / area})
+            rank1_phase.append({"iy": iy, "ix": ix, "signed_area": area, "phase": local_rank1["phase"], "phase_density": local_rank1["phase"] / area})
+            quality.append({"iy": iy, "ix": ix, "rank1": {"qualified": False, "status": "RANK1_WITHHELD", "reason": "band-2 rank-1 Berry is withheld by the M7 pilot gap gate"}, "rank2": numerical["rank2"], "min_link": local_rank1["min_link_magnitude"], "min_singular": local_rank2["min_singular_value"]})
+    return {"rank2_raw_map": rank2_phase, "rank1_status": "RANK1_WITHHELD", "quality_uncertainty_mask": quality}
+
+
+def run_berry_map(config, results_root: Path) -> int:
+    """Sample a small independent G15 Berry map in both reciprocal bases."""
+
+    center = np.asarray(config.raw["m7"]["k_center_reciprocal"], dtype=float)
+    orbit = m7_orbit(config)
+    grid = _map_grid(center, size=5, span=0.1)
+    rotated: list[np.ndarray] = []
+    for point in grid:
+        for angle in (0.0, 120.0, 240.0):
+            rotated.append(center + rotation(angle) @ (point - center))
+    solved_points = _unique_points(rotated)
+    spec = geometry_spec(config, "G15")
+    default = solve_pwe(spec, solved_points, gmax=5.0, numeig=4, pol=config.raw["polarization"])
+    closed = solve_pwe_closed_basis(spec, solved_points, seed_gmax=5.0, closure_qpoints=orbit, numeig=4, pol=config.raw["polarization"])
+    out = {}
+    for label, result in (("default_circular", default), ("closed_c3", closed)):
+        residual_map = []
+        point_index = {tuple(np.round(point, 12)): i for i, point in enumerate(solved_points)}
+        for point in grid:
+            source = point_index[tuple(np.round(point, 12))]
+            for angle in (120.0, 240.0):
+                target_point = center + rotation(angle) @ (point - center)
+                target = point_index[tuple(np.round(target_point, 12))]
+                mapping = reciprocal_c3_map(
+                    result["gvec"], result["gvec"], point, target_point, rotation_matrix=rotation(angle),
+                )
+                residual_map.append({
+                    "point": point.tolist(), "rotation_degrees": angle,
+                    "projector_residual": reciprocal_basis_projector_residual(
+                        result["eigenvectors"][source, :, 1:3], result["eigenvectors"][target, :, 1:3],
+                        result["gvec"], result["gvec"], point, target_point, rotation_matrix=rotation(angle),
+                    ),
+                    "matched_fraction": mapping["matched_fraction"],
+                })
+        out[label] = {"solved_point_count": len(solved_points), "berry": _berry_map_for_result(result, grid, solved_points, basis=DIRECT_BASIS), "c3_residual_map": residual_map}
+    report = {
+        "status": "succeeded", "mode": "pwe_g15_independent_berry_map", "case": "G15",
+        "grid_size": 5, "grid_span_reciprocal": 0.1,
+        "sampling": "25 independent grid points plus independently solved 120/240 degree images; no copied sectors or averaging",
+        "bases": out,
+    }
+    target = create_run(results_root, "pwe_g15_independent_berry_map", config.raw, report, {"grid_qpoints": grid, "solved_qpoints": solved_points})
+    figure, axes = plt.subplots(2, 2, figsize=(8, 6), dpi=120)
+    for column, (label, title) in enumerate((("default_circular", "default"), ("closed_c3", "closed C3"))):
+        phase = np.asarray([item["phase_density"] for item in out[label]["berry"]["rank2_raw_map"]]).reshape(4, 4)
+        residual = np.asarray([item["projector_residual"] for item in out[label]["c3_residual_map"]]).reshape(25, 2).max(axis=1).reshape(5, 5)
+        axes[0, column].imshow(phase, origin="lower", aspect="auto")
+        axes[0, column].set_title(f"{title} raw rank-2 phase density")
+        axes[1, column].imshow(residual, origin="lower", aspect="auto")
+        axes[1, column].set_title(f"{title} C3 projector residual")
+    for axis in axes.flat:
+        axis.set_xlabel("grid x")
+        axis.set_ylabel("grid y")
+    figure.tight_layout()
+    figure.savefig(target / "berry_map.png")
+    plt.close(figure)
     print(json.dumps({"result_directory": str(target), **report}, indent=2))
     return 0
 
