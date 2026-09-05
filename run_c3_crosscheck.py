@@ -13,8 +13,10 @@ import numpy as np
 from legumephc.config import load_benchmark
 from legumephc.diagnostics import (
     qualification,
+    operator_covariance_residual,
     rank1_wilson,
     rankn_wilson,
+    reciprocal_c3_map,
     composite_scalar_density,
     reciprocal_basis_projector_residual,
     relative_orbit_residual,
@@ -33,17 +35,26 @@ def main() -> int:
     parser.add_argument("--gmax", type=float, default=2.0)
     parser.add_argument("--convergence", action="store_true", help="scan all frozen geometries and gmax values")
     parser.add_argument("--extension", action="store_true", help="extend strict controls through gmax=6")
+    parser.add_argument("--operator-diagnosis", action="store_true", help="diagnose exact C3 closure of the PWE reciprocal basis")
+    parser.add_argument("--gmax7", action="store_true", help="run only the strict-control gmax=7 extension")
     parser.add_argument("--results", type=Path, default=Path(__file__).resolve().parent / "results")
     args = parser.parse_args()
 
     config = load_benchmark()
     qpoints = m7_orbit(config)
+    if args.operator_diagnosis:
+        return run_operator_diagnosis(config, args.results)
     if args.convergence:
         return run_pilot(config, args.results)
     if args.extension:
         return run_pilot(
             config, args.results, cases=("G15", "Circle"),
             gmax_values=(4.0, 5.0, 6.0), mode="pwe_c3_extension",
+        )
+    if args.gmax7:
+        return run_pilot(
+            config, args.results, cases=("G15", "Circle"),
+            gmax_values=(7.0,), mode="pwe_c3_gmax7",
         )
     if args.smoke:
         spec = geometry_spec(config, args.case)
@@ -320,6 +331,69 @@ def run_pilot(
         "python": platform.python_version(),
     }
     target = create_run(results_root, mode, config.raw, report, {"qpoints_orbit": orbit})
+    print(json.dumps({"result_directory": str(target), **report}, indent=2))
+    return 0
+
+
+def run_operator_diagnosis(config, results_root: Path) -> int:
+    """Check reciprocal-basis closure and TE operator covariance at gmax 2..6."""
+
+    orbit = m7_orbit(config)
+    rows_by_case: dict[str, list[dict[str, object]]] = {}
+    transform = rotation(120.0)
+    for case in ("G15", "Circle"):
+        spec = geometry_spec(config, case)
+        rows: list[dict[str, object]] = []
+        for gmax in (2.0, 3.0, 4.0, 5.0, 6.0):
+            result = solve_pwe(spec, orbit, gmax=gmax, numeig=4, pol=config.raw["polarization"])
+            transitions: list[dict[str, object]] = []
+            projector_residuals: list[float] = []
+            operator_residuals: list[float] = []
+            for index in range(3):
+                next_index = (index + 1) % 3
+                mapping = reciprocal_c3_map(
+                    result["gvec"], result["gvec"], orbit[index], orbit[next_index],
+                    rotation_matrix=transform,
+                )
+                operator_residual = operator_covariance_residual(
+                    result["eps_inv_mat"], result["gvec"], orbit[index], orbit[next_index], mapping,
+                )
+                if operator_residual is not None:
+                    operator_residuals.append(operator_residual)
+                projector_residuals.append(reciprocal_basis_projector_residual(
+                    result["eigenvectors"][index, :, 1:3],
+                    result["eigenvectors"][next_index, :, 1:3],
+                    result["gvec"], result["gvec"], orbit[index], orbit[next_index],
+                    rotation_matrix=transform,
+                ))
+                transitions.append({
+                    "source_member": index,
+                    "target_member": next_index,
+                    "matched_count": mapping["matched_count"],
+                    "source_count": mapping["source_count"],
+                    "matched_fraction": mapping["matched_fraction"],
+                    "unmatched_vectors": mapping["unmatched_vectors"],
+                    "maximum_matching_residual": mapping["maximum_matching_residual"],
+                    "shift_reciprocal": mapping["shift_reciprocal"],
+                    "operator_covariance_relative_residual": operator_residual,
+                })
+            rows.append({
+                "gmax": gmax,
+                "frequency_c3_max_residual": max(relative_orbit_residual(result["frequencies"][:, band]) for band in range(4)),
+                "projector_rank2_max_residual": max(projector_residuals),
+                "minimum_matched_fraction": min(item["matched_fraction"] for item in transitions),
+                "maximum_unmatched_count": max(item["source_count"] - item["matched_count"] for item in transitions),
+                "operator_covariance_max_residual": max(operator_residuals) if operator_residuals else None,
+                "transitions": transitions,
+            })
+        rows_by_case[case] = rows
+    report = {
+        "status": "succeeded",
+        "mode": "pwe_reciprocal_c3_operator_diagnosis",
+        "cases": rows_by_case,
+        "interpretation": "C3 map includes q_target - R q_source = R*K-K reciprocal shift; missing basis vectors are truncation-boundary evidence.",
+    }
+    target = create_run(results_root, "pwe_reciprocal_c3_operator_diagnosis", config.raw, report, {"qpoints_orbit": orbit})
     print(json.dumps({"result_directory": str(target), **report}, indent=2))
     return 0
 

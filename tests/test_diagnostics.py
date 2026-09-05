@@ -4,6 +4,7 @@ from legumephc.diagnostics import (
     projector_distance,
     rank1_wilson,
     rankn_wilson,
+    reciprocal_c3_map,
     rotated_density_residual,
     scalar_field_density,
 )
@@ -69,3 +70,19 @@ def test_rotated_density_residual_uses_periodic_cell_coordinates():
     )
     assert values.shape == (3, 1)
     assert np.max(values) < 1e-12
+
+
+def test_reciprocal_c3_map_includes_m7_reciprocal_shift():
+    q0 = np.array([0.4722222222222222, 0.0])
+    q1 = np.array([0.7638888888888888, -0.16839383310241256])
+    source = 2 * np.pi * np.array([[0.0, 1.0], [0.0, 0.0]])
+    transform = rotation(120.0)
+    shift = q1 - transform @ q0
+    target = 2 * np.pi * (transform @ (source / (2 * np.pi)) - shift[:, None])
+    result = reciprocal_c3_map(
+        source, target, q0, q1, rotation_matrix=transform,
+    )
+    assert result["matched_count"] == 2
+    assert result["matched_fraction"] == 1.0
+    assert np.allclose(result["shift_reciprocal"], [1.0, -1 / np.sqrt(3)])
+    assert result["maximum_matching_residual"] < 1e-12

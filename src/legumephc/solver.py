@@ -47,6 +47,7 @@ def solve_pwe(spec: GeometrySpec, qpoints: np.ndarray, *, gmax: float, numeig: i
         "frequencies": np.asarray(pwe.freqs),
         "eigenvectors": np.asarray(pwe.eigvecs),
         "gvec": np.asarray(pwe.gvec),
+        "eps_inv_mat": np.asarray(pwe.eps_inv_mat),
         "kpoints_cartesian": kpoints.T,
         "polarization": pol.lower(),
         "legume_version": getattr(legume, "__version__", "unknown"),

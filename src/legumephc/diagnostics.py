@@ -173,6 +173,63 @@ def reciprocal_basis_projector_residual(
     return projector_distance(left, right)
 
 
+def reciprocal_c3_map(
+    source_gvec: np.ndarray,
+    target_gvec: np.ndarray,
+    q_source: np.ndarray,
+    q_target: np.ndarray,
+    *,
+    rotation_matrix: np.ndarray,
+    tolerance: float = 1e-8,
+) -> dict[str, object]:
+    """Map physical plane waves including the M7 reciprocal-lattice shift."""
+
+    source_g = np.asarray(source_gvec, dtype=float) / (2.0 * math.pi)
+    target_g = np.asarray(target_gvec, dtype=float) / (2.0 * math.pi)
+    rotation_matrix = np.asarray(rotation_matrix, dtype=float)
+    shift = np.asarray(q_target, dtype=float) - rotation_matrix @ np.asarray(q_source, dtype=float)
+    transformed = rotation_matrix @ source_g - shift[:, None]
+    distances = np.linalg.norm(transformed.T[:, None, :] - target_g.T[None, :, :], axis=2)
+    indices = np.argmin(distances, axis=1)
+    residuals = distances[np.arange(len(indices)), indices]
+    matched = residuals <= tolerance
+    unmatched = [transformed[:, index].tolist() for index in np.flatnonzero(~matched)]
+    return {
+        "shift_reciprocal": shift.tolist(),
+        "matched_count": int(np.count_nonzero(matched)),
+        "source_count": int(len(source_g.T)),
+        "matched_fraction": float(np.mean(matched)),
+        "unmatched_vectors": unmatched,
+        "maximum_matching_residual": float(np.max(residuals[matched])) if np.any(matched) else None,
+        "indices": indices.tolist(),
+        "residuals": residuals.tolist(),
+        "matched": matched.tolist(),
+    }
+
+
+def operator_covariance_residual(
+    eps_inv_mat: np.ndarray,
+    gvec: np.ndarray,
+    q_source: np.ndarray,
+    q_target: np.ndarray,
+    mapping: dict[str, object],
+) -> float | None:
+    """Measure TE operator covariance under a closed reciprocal permutation."""
+
+    if not all(bool(value) for value in mapping["matched"]):
+        return None
+    gvec = np.asarray(gvec, dtype=float)
+    eps_inv_mat = np.asarray(eps_inv_mat, dtype=complex)
+    source_k = 2.0 * math.pi * np.asarray(q_source, dtype=float)[:, None] + gvec
+    target_k = 2.0 * math.pi * np.asarray(q_target, dtype=float)[:, None] + gvec
+    source_mat = (source_k.T @ source_k) * eps_inv_mat
+    indices = np.asarray(mapping["indices"], dtype=int)
+    target_mat = (target_k.T @ target_k) * eps_inv_mat
+    permuted_target = target_mat[np.ix_(indices, indices)]
+    scale = max(float(np.linalg.norm(source_mat)), np.finfo(float).eps)
+    return float(np.linalg.norm(source_mat - permuted_target) / scale)
+
+
 def qualification(
     frequencies: np.ndarray,
     rank1_links: list[float],
