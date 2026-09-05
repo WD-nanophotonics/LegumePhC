@@ -85,6 +85,24 @@ def scalar_field_density(
     return density.reshape(len(qpoints), grid_size, grid_size, vectors.shape[-1])
 
 
+def composite_scalar_density(
+    eigenvectors: np.ndarray,
+    gvec: np.ndarray,
+    qpoints: np.ndarray,
+    *,
+    bands: tuple[int, int] = (1, 2),
+    basis: np.ndarray,
+    grid_size: int = 32,
+) -> np.ndarray:
+    """Return the gauge-invariant density of a composite band subspace."""
+
+    first, last = bands
+    densities = scalar_field_density(
+        eigenvectors, gvec, qpoints, basis=basis, grid_size=grid_size,
+    )[..., first:last + 1]
+    return np.sum(densities, axis=-1)
+
+
 def rotated_density_residual(
     densities: np.ndarray,
     qpoints: np.ndarray,

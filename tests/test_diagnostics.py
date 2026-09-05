@@ -5,6 +5,7 @@ from legumephc.diagnostics import (
     rank1_wilson,
     rankn_wilson,
     rotated_density_residual,
+    scalar_field_density,
 )
 from legumephc.geometry import DIRECT_BASIS, rotation
 
@@ -28,6 +29,23 @@ def test_rankn_wilson_and_projector_are_u2_invariant():
     transformed = [space @ unitary for space, unitary in zip(spaces, rotations)]
     assert np.isclose(rankn_wilson(spaces)["phase"], rankn_wilson(transformed)["phase"])
     assert np.isclose(projector_distance(spaces[0], spaces[1]), projector_distance(transformed[0], transformed[1]))
+
+
+def test_composite_density_is_invariant_under_u2_band_mixing():
+    rng = np.random.default_rng(12)
+    vectors = np.stack([
+        np.linalg.qr(rng.normal(size=(5, 4)) + 1j * rng.normal(size=(5, 4)))[0]
+        for _ in range(3)
+    ])
+    unitary = np.linalg.qr(rng.normal(size=(2, 2)) + 1j * rng.normal(size=(2, 2)))[0]
+    mixed = vectors.copy()
+    mixed[:, :, 1:3] = np.einsum("kgb,bc->kgc", vectors[:, :, 1:3], unitary)
+    reciprocal = np.linalg.inv(DIRECT_BASIS).T
+    gvec = 2 * np.pi * (reciprocal @ np.array([[0, 1, -1, 0, 1], [0, 0, 0, 1, -1]], dtype=float))
+    qpoints = np.array([[0.2, 0.1], [0.3, -0.1], [-0.1, 0.2]])
+    original = scalar_field_density(vectors, gvec, qpoints, basis=DIRECT_BASIS, grid_size=16)
+    remixed = scalar_field_density(mixed, gvec, qpoints, basis=DIRECT_BASIS, grid_size=16)
+    assert np.allclose(original[..., 1:3].sum(axis=-1), remixed[..., 1:3].sum(axis=-1))
 
 
 def test_rotated_density_residual_uses_periodic_cell_coordinates():

@@ -15,6 +15,7 @@ from legumephc.diagnostics import (
     qualification,
     rank1_wilson,
     rankn_wilson,
+    composite_scalar_density,
     reciprocal_basis_projector_residual,
     relative_orbit_residual,
     rotated_density_residual,
@@ -31,6 +32,7 @@ def main() -> int:
     parser.add_argument("--case", choices=("G16", "G15", "Circle"), default="G15")
     parser.add_argument("--gmax", type=float, default=2.0)
     parser.add_argument("--convergence", action="store_true", help="scan all frozen geometries and gmax values")
+    parser.add_argument("--extension", action="store_true", help="extend strict controls through gmax=6")
     parser.add_argument("--results", type=Path, default=Path(__file__).resolve().parent / "results")
     args = parser.parse_args()
 
@@ -38,6 +40,11 @@ def main() -> int:
     qpoints = m7_orbit(config)
     if args.convergence:
         return run_pilot(config, args.results)
+    if args.extension:
+        return run_pilot(
+            config, args.results, cases=("G15", "Circle"),
+            gmax_values=(4.0, 5.0, 6.0), mode="pwe_c3_extension",
+        )
     if args.smoke:
         spec = geometry_spec(config, args.case)
         result = solve_pwe(spec, qpoints, gmax=args.gmax, numeig=4, pol=config.raw["polarization"])
@@ -90,15 +97,30 @@ def main() -> int:
     return 0
 
 
-def _loop_points(qpoints: np.ndarray, step: float) -> np.ndarray:
-    """Build a closed, piecewise-linear Berry loop with a declared step."""
+def _local_plaquette_points(centers: np.ndarray, step: float) -> tuple[np.ndarray, list[float]]:
+    """Return three C3-covariant four-corner local plaquettes.
 
-    points: list[np.ndarray] = []
-    for index in range(len(qpoints)):
-        start, end = qpoints[index], qpoints[(index + 1) % len(qpoints)]
-        count = max(1, int(np.ceil(np.linalg.norm(end - start) / step)))
-        points.extend(start + (end - start) * (n / count) for n in range(count))
-    return np.asarray(points)
+    The side vectors at member zero are rotated together with its center. The
+    returned order is counter-clockwise for each member and is suitable for a
+    four-link Wilson loop.
+    """
+
+    base_dx = np.array([step, 0.0])
+    base_dy = np.array([0.0, step])
+    corners: list[np.ndarray] = []
+    areas: list[float] = []
+    for index, center in enumerate(centers):
+        transform = rotation(120.0 * index)
+        dx, dy = transform @ base_dx, transform @ base_dy
+        corners.extend((center, center + dx, center + dx + dy, center + dy))
+        areas.append(float(dx[0] * dy[1] - dx[1] * dy[0]))
+    return np.asarray(corners), areas
+
+
+def _pairwise_relative_residual(values: list[float]) -> float:
+    data = np.asarray(values, dtype=float)
+    scale = max(float(np.max(np.abs(data))), np.finfo(float).eps)
+    return float(np.max(data) - np.min(data)) / scale
 
 
 def _wilson_summary(result: dict, loop_count: int, target_band: int = 1, offset: int = 0) -> dict[str, object]:
@@ -114,15 +136,23 @@ def _wilson_summary(result: dict, loop_count: int, target_band: int = 1, offset:
     }
 
 
-def run_pilot(config, results_root: Path) -> int:
+def run_pilot(
+    config,
+    results_root: Path,
+    *,
+    cases: tuple[str, ...] = ("G15", "Circle", "G16"),
+    gmax_values: tuple[float, ...] | None = None,
+    mode: str = "pwe_c3_convergence",
+) -> int:
     """Run the bounded three-geometry C3 convergence and Wilson pilot."""
 
     center = np.asarray(config.raw["m7"]["k_center_reciprocal"], dtype=float)
     orbit = m7_orbit(config)
     all_summaries: dict[str, object] = {}
     steps = [float(value) for value in config.raw["scan"]["berry_steps"]]
-    gmax_values = [float(value) for value in config.raw["scan"]["gmax"]]
-    for case in ("G15", "Circle", "G16"):
+    if gmax_values is None:
+        gmax_values = tuple(float(value) for value in config.raw["scan"]["gmax"])
+    for case in cases:
         spec = geometry_spec(config, case)
         case_rows: list[dict[str, object]] = []
         previous: np.ndarray | None = None
@@ -137,8 +167,29 @@ def run_pilot(config, results_root: Path) -> int:
                 result["eigenvectors"][1:], result["gvec"], orbit,
                 basis=DIRECT_BASIS, grid_size=32,
             )
-            density_residuals = rotated_density_residual(
+            densities64 = scalar_field_density(
+                result["eigenvectors"][1:], result["gvec"], orbit,
+                basis=DIRECT_BASIS, grid_size=64,
+            )
+            density_residuals32 = rotated_density_residual(
                 densities, orbit, basis=DIRECT_BASIS, rotation_matrix=rotation(120.0),
+            )
+            density_residuals64 = rotated_density_residual(
+                densities64, orbit, basis=DIRECT_BASIS, rotation_matrix=rotation(120.0),
+            )
+            composite32 = composite_scalar_density(
+                result["eigenvectors"][1:], result["gvec"], orbit,
+                bands=(1, 2), basis=DIRECT_BASIS, grid_size=32,
+            )
+            composite64 = composite_scalar_density(
+                result["eigenvectors"][1:], result["gvec"], orbit,
+                bands=(1, 2), basis=DIRECT_BASIS, grid_size=64,
+            )
+            composite_residual32 = rotated_density_residual(
+                composite32[..., None], orbit, basis=DIRECT_BASIS, rotation_matrix=rotation(120.0),
+            )
+            composite_residual64 = rotated_density_residual(
+                composite64[..., None], orbit, basis=DIRECT_BASIS, rotation_matrix=rotation(120.0),
             )
             projector_residuals = []
             for index in range(3):
@@ -148,7 +199,6 @@ def run_pilot(config, results_root: Path) -> int:
                     source, target, result["gvec"], result["gvec"],
                     orbit[index], orbit[(index + 1) % 3], rotation_matrix=rotation(120.0),
                 ))
-            direct_wilson = _wilson_summary(result, loop_count=3, target_band=1, offset=1)
             max_frequency_residual = max(
                 relative_orbit_residual(orbit_frequencies[:, band]) for band in range(4)
             )
@@ -165,39 +215,63 @@ def run_pilot(config, results_root: Path) -> int:
                     and frequency_change <= 2e-3
                     and max_frequency_residual <= 1e-3
                 ),
-                "density_rotated_residual_by_band": np.max(density_residuals, axis=0).tolist(),
+                "density_rotated_residual_by_band_grid32": np.max(density_residuals32, axis=0).tolist(),
+                "density_rotated_residual_by_band_grid64": np.max(density_residuals64, axis=0).tolist(),
+                "composite_23_density_rotated_residual_grid32": float(np.max(composite_residual32)),
+                "composite_23_density_rotated_residual_grid64": float(np.max(composite_residual64)),
                 "projector_rank2_covariance_residual_by_link": projector_residuals,
-                "direct_three_point_wilson": direct_wilson,
                 "geometry_residual": float(c3_geometry_residual(spec)),
                 "berry_steps": {},
             }
             previous = orbit_frequencies.copy()
             for step in steps:
-                loop = _loop_points(orbit, step)
-                # The center plus the complete discretized loop are one batch.
-                loop_result = solve_pwe(spec, np.vstack((center, loop)), gmax=gmax, numeig=4, pol=config.raw["polarization"])
-                loop_summary = _wilson_summary(loop_result, loop_count=len(loop), target_band=1, offset=1)
-                loop_summary["point_count"] = len(loop)
-                loop_summary["qualification"] = qualification(
-                    loop_result["frequencies"],
-                    [loop_summary["rank1"]["min_link_magnitude"]],
-                    [loop_summary["rank2"]["min_singular_value"]],
-                    [loop_summary["rank1"]["branch_margin"]],
-                    [loop_summary["rank2"]["branch_margin"]],
-                )
-                row["berry_steps"][str(step)] = loop_summary
-            row["qualification"] = qualification(
-                frequencies,
-                [direct_wilson["rank1"]["min_link_magnitude"]],
-                [direct_wilson["rank2"]["min_singular_value"]],
-                [direct_wilson["rank1"]["branch_margin"]],
-                [direct_wilson["rank2"]["branch_margin"]],
-            )
+                plaquette, areas = _local_plaquette_points(orbit, step)
+                # The 12 corners (three local plaquettes) are solved in one
+                # batch; no global orbit path is used for Berry qualification.
+                plaquette_result = solve_pwe(spec, plaquette, gmax=gmax, numeig=4, pol=config.raw["polarization"])
+                member_summaries = []
+                for member in range(3):
+                    start = member * 4
+                    local_frequencies = plaquette_result["frequencies"][start:start + 4]
+                    local_wilson = _wilson_summary(
+                        plaquette_result, loop_count=4, target_band=1, offset=start,
+                    )
+                    numerical = qualification(
+                        local_frequencies,
+                        [local_wilson["rank1"]["min_link_magnitude"]],
+                        [local_wilson["rank2"]["min_singular_value"]],
+                        [local_wilson["rank1"]["branch_margin"]],
+                        [local_wilson["rank2"]["branch_margin"]],
+                    )
+                    member_summaries.append({
+                        "member": member,
+                        "signed_area": areas[member],
+                        "phase_density_rank1": local_wilson["rank1"]["phase"] / areas[member],
+                        "phase_density_rank2": local_wilson["rank2"]["phase"] / areas[member],
+                        "wilson": local_wilson,
+                        "numerical_qualification": numerical,
+                    })
+                rank1_densities = [item["phase_density_rank1"] for item in member_summaries]
+                rank2_densities = [item["phase_density_rank2"] for item in member_summaries]
+                rank1_links = [item["wilson"]["rank1"]["min_link_magnitude"] for item in member_summaries]
+                rank2_links = [item["wilson"]["rank2"]["min_singular_value"] for item in member_summaries]
+                pairwise = {
+                    "rank1_phase_density_relative_residual": _pairwise_relative_residual(rank1_densities),
+                    "rank2_phase_density_relative_residual": _pairwise_relative_residual(rank2_densities),
+                    "rank1_link_relative_residual": _pairwise_relative_residual(rank1_links),
+                    "rank2_link_relative_residual": _pairwise_relative_residual(rank2_links),
+                }
+                row["berry_steps"][str(step)] = {
+                    "plaquette_point_count": 12,
+                    "member_summaries": member_summaries,
+                    "pairwise_c3_residual": pairwise,
+                }
             case_rows.append(row)
             arrays = {
                 "qpoints_center_orbit": qbatch,
                 "frequencies": frequencies,
-                "density_orbit_band2": densities[:, :, :, 1],
+                "density_orbit_band2_grid32": densities[:, :, :, 1],
+                "density_orbit_composite_23_grid32": composite32,
             }
             summary = {
                 "status": "succeeded",
@@ -219,8 +293,33 @@ def run_pilot(config, results_root: Path) -> int:
             fig.savefig(target / "frequencies.png")
             plt.close(fig)
         all_summaries[case] = case_rows
-    report = {"status": "succeeded", "mode": "pwe_c3_convergence", "cases": all_summaries, "python": platform.python_version()}
-    target = create_run(results_root, "pwe_c3_convergence", config.raw, report, {"qpoints_orbit": orbit})
+    covariance_basis: dict[str, object] = {}
+    for case, rows in all_summaries.items():
+        by_gmax = {float(row["gmax"]): row for row in rows}
+        if 4.0 in by_gmax and 5.0 in by_gmax:
+            r4 = max(by_gmax[4.0]["projector_rank2_covariance_residual_by_link"])
+            r5 = max(by_gmax[5.0]["projector_rank2_covariance_residual_by_link"])
+            variation = abs(r5 - r4)
+            covariance_basis[case] = {
+                "gmax4_max_residual": r4,
+                "gmax5_max_residual": r5,
+                "observed_cutoff_variation": variation,
+                "tolerance_basis": "absolute gmax=4 to gmax=5 variation; no fixed C3 tolerance",
+                "gmax5_status": "C3_NOT_QUALIFIED" if r5 > variation else "C3_QUALIFIED",
+            }
+            for row in rows:
+                if float(row["gmax"]) >= 5.0:
+                    row["c3_covariance_qualification"] = {
+                        "projector_max_residual": max(row["projector_rank2_covariance_residual_by_link"]),
+                        "tolerance": variation,
+                        "status": covariance_basis[case]["gmax5_status"],
+                    }
+    report = {
+        "status": "succeeded", "mode": mode, "cases": all_summaries,
+        "projector_c3_tolerance_basis": covariance_basis,
+        "python": platform.python_version(),
+    }
+    target = create_run(results_root, mode, config.raw, report, {"qpoints_orbit": orbit})
     print(json.dumps({"result_directory": str(target), **report}, indent=2))
     return 0
 
