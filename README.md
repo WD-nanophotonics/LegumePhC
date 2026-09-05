@@ -72,3 +72,18 @@ the verified one-circle C4 model and Γ–X–M–Γ path.
 `affine` applies the configured full 2×2 transform, ellipse/material-mask
 geometry, TE/TM solves, and reports symmetry `none`. The read-only
 `references/mpb/index.json` file is metadata only and is not read by studies.
+
+## Phase D Studio
+
+Launch the compact Tkinter Studio directly with the pinned Windows interpreter:
+
+```powershell
+.venv\Scripts\python.exe studio.py
+```
+
+Projects use the `.legumephc-studio.json` format and store only relative,
+hashed references to immutable JSON+NPZ records. Parameter presets use the
+separate `.legumephc-preset.json` format and never contain result references.
+Preview refreshes are solver-free; formal calculations run in one exact child
+process and can be cancelled without a background service. User-facing band
+labels are one-based and are mapped to the core's explicit zero-based API.
