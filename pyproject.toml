@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "legumephc"
+version = "0.1.0"
+description = "Windows-native Legume cross-validation for MePhC C3 physics"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "legume-gme==1.0.3",
+  "numpy>=1.26,<3",
+  "scipy>=1.12,<2",
+  "matplotlib>=3.8,<4",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<9"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["integration: runs the real Legume solver"]
+

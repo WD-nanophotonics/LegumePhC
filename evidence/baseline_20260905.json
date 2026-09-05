@@ -1,0 +1,27 @@
+{
+  "schema": "legumephc-supervisor-baseline-v1",
+  "python": "3.12.0",
+  "legume": "1.0.3",
+  "homogeneous": {
+    "gmax": 2.0,
+    "maximum_absolute_analytic_frequency_error": 8.326672684688674e-17,
+    "maximum_c3_relative_frequency_residual": 3.1739317056930946e-16,
+    "status": "PASS"
+  },
+  "g15_three_point_smoke": {
+    "gmax": 2.0,
+    "frequencies": [
+      [0.20223256747669918, 0.3349811892260178, 0.3398945943477432, 0.5319210421162106],
+      [0.2046960070161048, 0.3330345825165614, 0.33993908298321157, 0.5332088912701219],
+      [0.204696006971002, 0.3330345824749429, 0.3399390830363389, 0.5332088913195812]
+    ],
+    "frequency_c3_relative_residual_by_band": [
+      0.01203462429636842,
+      0.005811092723064746,
+      0.0001308725322146436,
+      0.0024152808108345515
+    ],
+    "status": "RUN_COMPLETED_NOT_YET_CONVERGED"
+  },
+  "interpretation": "The Windows-native PWE chain and coordinate convention are calibrated. The low-cutoff G15 smoke is not a C3 qualification result; its cutoff convergence remains the next scientific task."
+}

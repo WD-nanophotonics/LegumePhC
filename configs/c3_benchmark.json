@@ -1,0 +1,24 @@
+{
+  "schema": "legumephc-c3-benchmark-v1",
+  "lattice_constant_nm": 400.0,
+  "background_epsilon": 7.290000000000001,
+  "inclusion_epsilon": 1.0,
+  "target_band_one_based": 2,
+  "composite_bands_one_based": [2, 3],
+  "polarization": "te",
+  "m7": {
+    "k_center_reciprocal": [0.6666666666666666, 0.0],
+    "seed_offset_reciprocal": [0.19444444444444445, 0.0],
+    "rotation_degrees": [0.0, 120.0, 240.0]
+  },
+  "scan": {
+    "gmax": [2, 3, 4, 5],
+    "berry_steps": [0.006944444444444444, 0.003472222222222222, 0.001]
+  },
+  "geometries": {
+    "G16": {"kind": "polygon", "radii_nm": [80.0, 75.0], "sides": [16, 16], "angles_degrees": [0.0, 60.0], "strict_c3": false},
+    "G15": {"kind": "polygon", "radii_nm": [80.14335684352235, 75.13439704080221], "sides": [15, 15], "angles_degrees": [0.0, 60.0], "strict_c3": true},
+    "Circle": {"kind": "circle", "radii_nm": [80.0, 75.0], "strict_c3": true}
+  }
+}
+
