@@ -14,6 +14,8 @@ from legumephc.geometry import (
     m7_orbit,
     polygon_vertices,
     point_group_operations,
+    point_group_geometry_residual,
+    square_circle_spec,
     strict_c3_by_construction,
 )
 from legumephc.model import Model2D
@@ -71,3 +73,8 @@ def test_lattice_paths_and_generic_affine_labels_are_honest():
     assert np.isclose(np.linalg.norm(generic_path[-1]), 0.0)
     assert len(point_group_operations("C3")) == 3
     assert len(point_group_operations("C4")) == 4
+    square = Lattice2D.square()
+    assert point_group_geometry_residual(square_circle_spec(), square, "C4") < 1e-12
+    assert Model2D(square_circle_spec(), square).point_group == "C4"
+    assert Model2D(geometry_spec(config, "G15"), square, unverified_point_group="C4").point_group is None
+    assert Model2D.from_benchmark(config, "G15", affine=Affine2D(linear=np.array([[1.0, 0.2], [0.0, 1.0]]))).point_group is None

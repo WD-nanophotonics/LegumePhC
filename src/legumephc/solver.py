@@ -7,7 +7,6 @@ import numpy as np
 
 from .geometry import (
     DIRECT_BASIS,
-    SUBLATTICE_CENTERS,
     GeometrySpec,
     point_group_operations,
     polygon_vertices,
@@ -23,7 +22,7 @@ def build_layer(spec: GeometrySpec, *, lattice=None):
     a1, a2 = direct_basis.T
     lattice = legume.Lattice(a1, a2)
     layer = legume.ShapesLayer(lattice, eps_b=spec.epsilon_background)
-    for index, (center, radius) in enumerate(zip(SUBLATTICE_CENTERS, spec.radii)):
+    for index, (center, radius) in enumerate(zip(spec.centers, spec.radii)):
         if spec.kind == "circle":
             shape = legume.Circle(eps=spec.epsilon_inclusion, x_cent=float(center[0]), y_cent=float(center[1]), r=radius)
         else:

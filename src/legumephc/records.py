@@ -37,21 +37,5 @@ def create_record(
     _json(target / "config.json", {"identity": identity, "config": config})
     _json(target / "summary.json", summary)
     np.savez_compressed(target / "arrays.npz", **arrays)
-    # Keep the legacy filename readable while all new records use arrays.npz.
-    np.savez_compressed(target / "fields.npz", **arrays)
     (target / "figures").mkdir()
     return target
-
-
-def create_run(root: str | Path, label: str, config: dict, summary: dict, arrays: dict[str, np.ndarray]) -> Path:
-    """Backward-compatible wrapper for the immutable record core."""
-
-    identity = {
-        "model": summary.get("model", "Model2D"),
-        "geometry": summary.get("case", summary.get("geometry", "unknown")),
-        "affine": summary.get("affine", "identity"),
-        "basis": summary.get("basis_policy", summary.get("basis", "native")),
-        "solver": summary.get("solver", "Legume.PlaneWaveExp"),
-        "operation": label,
-    }
-    return create_record(root, identity=identity, config=config, summary=summary, arrays=arrays)

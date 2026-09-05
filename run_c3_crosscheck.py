@@ -27,7 +27,7 @@ from legumephc.diagnostics import (
     te_scalar_field_densities,
 )
 from legumephc.geometry import DIRECT_BASIS, c3_geometry_residual, geometry_spec, m7_orbit, rotation
-from legumephc.records import create_run
+from legumephc.records import create_record
 from legumephc.solver import (
     homogeneous_shell_frequencies,
     solve_homogeneous_pwe,
@@ -35,6 +35,18 @@ from legumephc.solver import (
     solve_pwe_closed_basis,
     solve_pwe_custom_basis,
 )
+
+
+def _create_runner_record(root, operation, config, summary, arrays):
+    identity = {
+        "model": "Model2D",
+        "geometry": summary.get("case", summary.get("geometry", "benchmark")),
+        "affine": {"linear": [[1.0, 0.0], [0.0, 1.0]], "translation": [0.0, 0.0]},
+        "basis": summary.get("basis_policy", summary.get("basis", "native")),
+        "solver": "Legume.PlaneWaveExp",
+        "operation": operation,
+    }
+    return create_record(root, identity=identity, config=config, summary=summary, arrays=arrays)
 
 
 def main() -> int:
@@ -115,7 +127,7 @@ def main() -> int:
         }
         arrays = {"qpoints": qpoints, "pwe_frequencies": frequencies, "analytic_frequencies": shells, "gvec": result["gvec"]}
 
-    target = create_run(args.results, summary["mode"], config.raw, summary, arrays)
+    target = _create_runner_record(args.results, summary["mode"], config.raw, summary, arrays)
     values = np.asarray(summary.get("frequencies", summary.get("pwe_frequencies")))
     fig, ax = plt.subplots(figsize=(5, 3.5), dpi=120)
     for band in range(values.shape[1]):
@@ -314,7 +326,7 @@ def run_pilot(
                 "python": platform.python_version(),
                 "legume": result["legume_version"],
             }
-            target = create_run(results_root, "pwe_c3_pilot", config.raw, summary, arrays)
+            target = _create_runner_record(results_root, "pwe_c3_pilot", config.raw, summary, arrays)
             values = frequencies
             fig, ax = plt.subplots(figsize=(5, 3.5), dpi=120)
             for band in range(values.shape[1]):
@@ -351,7 +363,7 @@ def run_pilot(
         "projector_c3_tolerance_basis": covariance_basis,
         "python": platform.python_version(),
     }
-    target = create_run(results_root, mode, config.raw, report, {"qpoints_orbit": orbit})
+    target = _create_runner_record(results_root, mode, config.raw, report, {"qpoints_orbit": orbit})
     print(json.dumps({"result_directory": str(target), **report}, indent=2))
     return 0
 
@@ -414,7 +426,7 @@ def run_operator_diagnosis(config, results_root: Path) -> int:
         "cases": rows_by_case,
         "interpretation": "C3 map includes q_target - R q_source = R*K-K reciprocal shift; missing basis vectors are truncation-boundary evidence.",
     }
-    target = create_run(results_root, "pwe_reciprocal_c3_operator_diagnosis", config.raw, report, {"qpoints_orbit": orbit})
+    target = _create_runner_record(results_root, "pwe_reciprocal_c3_operator_diagnosis", config.raw, report, {"qpoints_orbit": orbit})
     print(json.dumps({"result_directory": str(target), **report}, indent=2))
     return 0
 
@@ -469,7 +481,7 @@ def run_closed_adapter(config, results_root: Path) -> int:
         "cases": cases,
         "interpretation": "The adapter reconstructs the full Fourier epsilon matrix for an affine-C3-closed finite basis; Legume site-packages are unchanged.",
     }
-    target = create_run(results_root, "pwe_c3_closed_basis_adapter", config.raw, report, {"qpoints_orbit": orbit})
+    target = _create_runner_record(results_root, "pwe_c3_closed_basis_adapter", config.raw, report, {"qpoints_orbit": orbit})
     print(json.dumps({"result_directory": str(target), **report}, indent=2))
     return 0
 
@@ -549,7 +561,7 @@ def run_closed_plaquette(config, results_root: Path) -> int:
         "cases": cases,
         "interpretation": "Closed-basis local plaquettes use normalized PWE eigenvectors; rank-1 is withheld whenever gap, association/link, or branch qualification fails.",
     }
-    target = create_run(results_root, "pwe_c3_closed_local_plaquette", config.raw, report, {"qpoints_orbit": orbit})
+    target = _create_runner_record(results_root, "pwe_c3_closed_local_plaquette", config.raw, report, {"qpoints_orbit": orbit})
     print(json.dumps({"result_directory": str(target), **report}, indent=2))
     return 0
 
@@ -608,7 +620,7 @@ def run_bandpath(config, results_root: Path) -> int:
         "rows": rows,
         "closed_pilot_gate": "closed M7 C3 residual < 1e-6 for all tested gmax",
     }
-    target = create_run(results_root, "pwe_g15_bandpath_default_vs_closed", config.raw, report, {"path_qpoints": path})
+    target = _create_runner_record(results_root, "pwe_g15_bandpath_default_vs_closed", config.raw, report, {"path_qpoints": path})
     figure, axes = plt.subplots(1, 2, figsize=(9, 3.5), dpi=120)
     for row in rows:
         axes[0].plot(np.arange(len(path)), np.asarray(row["default_path_frequencies"])[:, 1], marker="o", label=f"default g{row['gmax']}")
@@ -714,7 +726,7 @@ def run_berry_map(config, results_root: Path) -> int:
         "sampling": "25 independent grid points plus independently solved 120/240 degree images; no copied sectors or averaging",
         "bases": out,
     }
-    target = create_run(results_root, "pwe_g15_independent_berry_map", config.raw, report, {"grid_qpoints": grid, "solved_qpoints": solved_points})
+    target = _create_runner_record(results_root, "pwe_g15_independent_berry_map", config.raw, report, {"grid_qpoints": grid, "solved_qpoints": solved_points})
     figure, axes = plt.subplots(2, 2, figsize=(8, 6), dpi=120)
     for column, (label, title) in enumerate((("default_circular", "default"), ("closed_c3", "closed C3"))):
         phase = np.asarray([item["phase_density"] for item in out[label]["berry"]["rank2_raw_map"]]).reshape(4, 4)

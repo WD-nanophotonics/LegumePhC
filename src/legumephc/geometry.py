@@ -65,13 +65,24 @@ class Affine2D:
 class GeometrySpec:
     name: str
     kind: str
-    radii: tuple[float, float]
-    sides: tuple[int, int] | None
-    angles_degrees: tuple[float, float]
+    radii: tuple[float, ...]
+    sides: tuple[int, ...] | None
+    angles_degrees: tuple[float, ...]
     strict_c3: bool
     epsilon_background: float
     epsilon_inclusion: float
     direct_basis: np.ndarray = field(default_factory=lambda: DIRECT_BASIS.copy())
+    centers: np.ndarray = field(default_factory=lambda: SUBLATTICE_CENTERS.copy())
+
+    def __post_init__(self) -> None:
+        centers = np.asarray(self.centers, dtype=float)
+        if centers.ndim != 2 or centers.shape[1] != 2 or len(centers) != len(self.radii):
+            raise ValueError("centers must contain one 2-vector for every motif radius")
+        if self.kind == "polygon" and (self.sides is None or len(self.sides) != len(self.radii)):
+            raise ValueError("polygon geometry requires one side count per motif radius")
+        if len(self.angles_degrees) != len(self.radii):
+            raise ValueError("angles_degrees must contain one angle per motif radius")
+        object.__setattr__(self, "centers", centers)
 
 
 def geometry_spec(config: BenchmarkConfig, name: str) -> GeometrySpec:
@@ -92,6 +103,30 @@ def geometry_spec(config: BenchmarkConfig, name: str) -> GeometrySpec:
         epsilon_background=config.background_epsilon,
         epsilon_inclusion=config.inclusion_epsilon,
         direct_basis=DIRECT_BASIS.copy(),
+        centers=SUBLATTICE_CENTERS.copy(),
+    )
+
+
+def square_circle_spec(
+    *,
+    radius: float = 0.2,
+    epsilon_background: float = 7.29,
+    epsilon_inclusion: float = 1.0,
+    name: str = "SquareCircle",
+) -> GeometrySpec:
+    """Create the verified one-circle square-lattice C4 control geometry."""
+
+    return GeometrySpec(
+        name=name,
+        kind="circle",
+        radii=(float(radius),),
+        sides=None,
+        angles_degrees=(0.0,),
+        strict_c3=False,
+        epsilon_background=float(epsilon_background),
+        epsilon_inclusion=float(epsilon_inclusion),
+        direct_basis=np.eye(2),
+        centers=np.array([[0.5, 0.5]], dtype=float),
     )
 
 
@@ -117,6 +152,40 @@ def point_group_operations(point_group: str) -> tuple[np.ndarray, ...]:
     except KeyError as exc:
         raise ValueError("point_group must be C3 or C4") from exc
     return tuple(rotation(360.0 * index / order) for index in range(order))
+
+
+def point_group_geometry_residual(spec: GeometrySpec, lattice: Lattice2D, point_group: str) -> float:
+    """Measure motif and lattice compatibility with a finite cyclic group."""
+
+    operations = point_group_operations(point_group)
+    direct_basis = np.asarray(lattice.direct_basis, dtype=float)
+    inverse_basis = np.linalg.inv(direct_basis)
+    residual = 0.0
+    for operation in operations[1:]:
+        operation_in_basis = inverse_basis @ operation @ direct_basis
+        residual = max(residual, float(np.max(np.abs(operation_in_basis - np.rint(operation_in_basis)))))
+        for index, center in enumerate(spec.centers):
+            transformed_center = operation @ center
+            displacements = transformed_center[None, :] - spec.centers
+            coefficients = displacements @ inverse_basis.T
+            periodic = coefficients - np.rint(coefficients)
+            candidate = int(np.argmin(np.linalg.norm(periodic, axis=1)))
+            residual = max(residual, float(np.linalg.norm(periodic[candidate])))
+            if np.linalg.norm(periodic[candidate]) > 1e-10:
+                continue
+            if abs(spec.radii[index] - spec.radii[candidate]) > residual:
+                residual = abs(spec.radii[index] - spec.radii[candidate])
+            if spec.kind == "polygon":
+                assert spec.sides is not None
+                if spec.sides[index] != spec.sides[candidate]:
+                    residual = max(residual, 1.0)
+                    continue
+                source = polygon_vertices(spec.radii[index], spec.sides[index], spec.angles_degrees[index], np.zeros(2))
+                target = polygon_vertices(spec.radii[candidate], spec.sides[candidate], spec.angles_degrees[candidate], np.zeros(2))
+                rotated = source @ operation.T
+                pairwise = np.linalg.norm(rotated[:, None, :] - target[None, :, :], axis=2)
+                residual = max(residual, float(max(np.max(np.min(pairwise, axis=1)), np.max(np.min(pairwise, axis=0)))))
+    return residual
 
 
 def m7_orbit(config: BenchmarkConfig) -> np.ndarray:
@@ -193,18 +262,4 @@ def identity_path(lattice: Lattice2D, samples_per_segment: int = 16) -> tuple[tu
 def c3_geometry_residual(spec: GeometrySpec) -> float:
     """Return a solver-free Hausdorff residual for the periodic motif under C3."""
 
-    transform = rotation(120.0)
-    inverse_basis = np.linalg.inv(DIRECT_BASIS)
-    residual = 0.0
-    for index, center in enumerate(SUBLATTICE_CENTERS):
-        displacement = transform @ center - center
-        lattice_coefficients = inverse_basis @ displacement
-        residual = max(residual, float(np.max(np.abs(lattice_coefficients - np.rint(lattice_coefficients)))))
-        if spec.kind == "circle":
-            continue
-        assert spec.sides is not None
-        local = polygon_vertices(spec.radii[index], spec.sides[index], spec.angles_degrees[index], np.zeros(2))
-        rotated = local @ transform.T
-        pairwise = np.linalg.norm(rotated[:, None, :] - local[None, :, :], axis=2)
-        residual = max(residual, float(max(np.max(np.min(pairwise, axis=1)), np.max(np.min(pairwise, axis=0)))))
-    return residual
+    return point_group_geometry_residual(spec, Lattice2D(DIRECT_BASIS, kind="triangular"), "C3")
