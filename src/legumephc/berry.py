@@ -91,6 +91,7 @@ def solve_berry(
     gap_floor: float = 1e-3,
     link_floor: float = 0.1,
     branch_floor: float = 0.1,
+    convergence_status: str = "NOT_ASSESSED",
     record_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Compute unsymmetrized Wilson phase and curvature for each 4-point loop."""
@@ -103,6 +104,8 @@ def solve_berry(
         raise ValueError("rank=1 requires one band")
     if rank != len(bands):
         raise ValueError("rank must equal the number of selected bands")
+    if convergence_status not in {"NOT_ASSESSED", "CONVERGED", "FAILED"}:
+        raise ValueError("convergence_status must be NOT_ASSESSED, CONVERGED, or FAILED")
     unique_qpoints, inverse = _unique_points(plaquettes)
     solved = solve_bands(model, unique_qpoints, gmax=gmax, numeig=max(numeig, max(bands) + 2), pol=pol)
     vectors = np.asarray(solved["eigenvectors"])
@@ -129,6 +132,9 @@ def solve_berry(
     aggregate = {
         "qualified": bool(np.all(qualified)),
         "status": "QUALIFIED" if np.all(qualified) else ("RANK1_WITHHELD" if rank == 1 else "UNQUALIFIED"),
+        "gate_status": "PASS" if np.all(qualified) else "FAIL",
+        "convergence_status": convergence_status,
+        "overall_status": "QUALIFIED" if np.all(qualified) and convergence_status == "CONVERGED" else ("RANK1_WITHHELD" if rank == 1 and not np.all(qualified) else "UNQUALIFIED_CONVERGENCE_NOT_ASSESSED" if convergence_status == "NOT_ASSESSED" else "UNQUALIFIED_CONVERGENCE_FAILED"),
         "plaquette_count": len(plaquettes),
         "per_plaquette": qualifications,
     }
@@ -153,5 +159,5 @@ def solve_berry(
         "polarization": pol.lower(),
     }
     if record_root is not None:
-        create_model_record(record_root, model, "solve_berry", {"gmax": gmax, "bands": bands, "rank": rank, "polarization": pol.lower()}, {"status": "succeeded", "qualification": aggregate, "raw_unsymmetrized": True}, {key: value for key, value in output.items() if isinstance(value, np.ndarray)})
+        create_model_record(record_root, model, "solve_berry", {"gmax": gmax, "bands": bands, "rank": rank, "polarization": pol.lower(), "convergence_status": convergence_status}, {"status": "succeeded", "qualification": aggregate, "raw_unsymmetrized": True}, {key: value for key, value in output.items() if isinstance(value, np.ndarray)})
     return output

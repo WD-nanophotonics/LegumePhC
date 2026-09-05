@@ -40,9 +40,12 @@ def test_phase_b_real_square_smoke_and_records(tmp_path):
     field = compute_field_observables(bands, model.geometry, lattice=model.lattice, bands=(1, 2), grid_size=8, record_root=tmp_path)
     assert field["E2"].shape == (4, 8, 8, 2)
     efs = solve_efs(model, qpoints, gmax=2, bands=(1, 2), pol="tm", record_root=tmp_path)
-    assert efs["iso_frequency_ready"] and efs["frequencies"].shape == (4, 2)
+    assert not efs["iso_frequency_ready"]
+    assert efs["sampling_domain"] == "explicit_sparse_samples"
+    assert efs["frequencies"].shape == (4, 2)
     berry = solve_berry(model, qpoints, gmax=2, bands=(1, 2), pol="te", record_root=tmp_path)
     assert berry["raw_unsymmetrized"] and berry["qualification"]["status"] == "QUALIFIED"
+    assert berry["qualification"]["overall_status"] == "UNQUALIFIED_CONVERGENCE_NOT_ASSESSED"
     assert max(edge["operator_residual"] for item in berry["covariance"] for edge in item["edges"]) < 1e-12
     multi_berry = solve_berry(model, np.stack((qpoints, qpoints + np.array([0.01, 0.01]))), gmax=2, bands=(1, 2), pol="te")
     assert multi_berry["phases"].shape == (2,) and multi_berry["areas"].shape == (2,)
@@ -50,6 +53,19 @@ def test_phase_b_real_square_smoke_and_records(tmp_path):
     assert withheld["qualification"]["status"] == "RANK1_WITHHELD"
     assert np.isnan(withheld["qualified_curvature"]).all()
     assert len(list(tmp_path.iterdir())) == 4
+
+
+def test_solve_efs_first_bz_grid_is_iso_frequency_ready():
+    model = Model2D(square_circle_spec(), Lattice2D.square())
+    efs = solve_efs(model, gmax=2, grid_size=5, bands=(1, 2), numeig=4, pol="te")
+    assert efs["iso_frequency_ready"]
+    assert efs["sampling_domain"] == "first_bz_grid"
+    assert efs["grid_shape"] == (5, 5)
+    assert efs["inside_bz_mask"].shape == (5, 5)
+    assert efs["qpoints"].shape[0] == int(np.count_nonzero(efs["inside_bz_mask"]))
+    assert efs["qpoints"].shape[0] == 25
+    assert np.allclose(np.min(efs["qpoints"], axis=0), [-0.5, -0.5])
+    assert np.allclose(np.max(efs["qpoints"], axis=0), [0.5, 0.5])
 
 
 def test_solve_bands_identity_path_and_frequency_record(tmp_path):

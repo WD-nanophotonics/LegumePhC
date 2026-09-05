@@ -1,0 +1,1 @@
+"""Triangular benchmark study."""

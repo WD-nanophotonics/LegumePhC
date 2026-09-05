@@ -1,0 +1,30 @@
+{
+  "study": "triangular",
+  "benchmark_config": "../../configs/c3_benchmark.json",
+  "lattice": "triangular",
+  "lattice_constant_nm": 400.0,
+  "background_epsilon": 7.290000000000001,
+  "inclusion_epsilon": 1.0,
+  "geometries": {
+    "G15": {"kind": "polygon", "radii_nm": [80.14335684352235, 75.13439704080221], "sides": [15, 15], "angles_degrees": [0.0, 60.0], "strict_c3": true},
+    "Circle": {"kind": "circle", "radii_nm": [80.0, 75.0], "strict_c3": true},
+    "G16": {"kind": "polygon", "radii_nm": [80.0, 75.0], "sides": [16, 16], "angles_degrees": [0.0, 60.0], "strict_c3": false}
+  },
+  "cases": ["G15", "Circle", "G16"],
+  "berry_cases": ["G15", "Circle"],
+  "gmax": 2,
+  "numeig": 4,
+  "target_band_zero_based": 1,
+  "band_path": "identity",
+  "field_grid_size": 8,
+  "efs_grid_size": 5,
+  "polarization": "te",
+  "berry_bands_zero_based": [1, 2],
+  "berry_rank": 2,
+  "berry_step": 0.01,
+  "synthetic_dipole": {
+    "qpoints": [[-0.1, -0.1], [-0.1, 0.1], [0.1, 0.1], [0.1, -0.1]],
+    "curvature_coefficients": [2.0, -3.0, 1.0]
+  },
+  "notes": "G15 and Circle are symmetry-qualified C3 controls; G16 is an honest near-C3 control."
+}

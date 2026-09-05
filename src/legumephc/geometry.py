@@ -225,12 +225,12 @@ def first_bz_labels(lattice: Lattice2D) -> tuple[str, ...]:
     return ("Gamma", "P1", "P2", "Gamma")
 
 
-def first_bz_vertices(lattice: Lattice2D) -> np.ndarray:
-    """Return the actual Wigner-Seitz vertices around reciprocal-space Gamma."""
+def _first_bz_vertices_from_basis(basis: np.ndarray) -> np.ndarray:
+    """Construct Wigner-Seitz vertices for the supplied reciprocal basis."""
 
     from scipy.spatial import Voronoi
 
-    basis = lattice.reciprocal_basis
+    basis = np.asarray(basis, dtype=float)
     integer_points = np.asarray(
         [[n1, n2] for n1 in range(-3, 4) for n2 in range(-3, 4) if (n1, n2) != (0, 0)],
         dtype=float,
@@ -246,20 +246,38 @@ def first_bz_vertices(lattice: Lattice2D) -> np.ndarray:
     return vertices[order]
 
 
+def first_bz_vertices(lattice: Lattice2D) -> np.ndarray:
+    """Return first-BZ vertices in public reduced reciprocal coordinates.
+
+    These Cartesian coordinates omit ``2*pi``.  They are the coordinates
+    accepted by :func:`legumephc.solver.q_to_legume_k`; that function is the
+    sole conversion point into Legume's physical wave-vector units.
+    """
+
+    return _first_bz_vertices_from_basis(lattice.reciprocal_basis_reduced)
+
+
+def first_bz_vertices_physical(lattice: Lattice2D) -> np.ndarray:
+    """Return first-BZ vertices with physical ``2*pi`` reciprocal units."""
+
+    return _first_bz_vertices_from_basis(lattice.reciprocal_basis)
+
+
 def identity_path(lattice: Lattice2D, samples_per_segment: int = 16) -> tuple[tuple[str, ...], np.ndarray]:
     """Return a high-symmetry identity path with honest generic labels."""
 
     reciprocal = lattice.reciprocal_basis_reduced
     if lattice.kind == "triangular":
-        reduced = np.array([[0.0, 0.0], [2.0 / 3.0, 0.0], [0.5, 0.5], [0.0, 0.0]])
+        b1, b2 = reciprocal.T
+        # Gamma-K-M-Gamma in Cartesian reduced coordinates.  K is the
+        # frozen (b1+b2)/3 corner and M is the midpoint on its b1 edge.
+        vertices = np.asarray([[0.0, 0.0], (b1 + b2) / 3.0, b1 / 2.0, [0.0, 0.0]])
     elif lattice.kind == "square":
         reduced = np.array([[0.0, 0.0], [0.5, 0.0], [0.5, 0.5], [0.0, 0.0]])
         vertices = (lattice.reciprocal_basis_reduced @ reduced.T).T
     else:
         bz = first_bz_vertices(lattice)
         vertices = np.vstack((np.zeros(2), bz[0], bz[1], np.zeros(2)))
-    if lattice.kind == "triangular":
-        vertices = (reciprocal @ reduced.T).T
     points: list[np.ndarray] = []
     for start, end in zip(vertices[:-1], vertices[1:]):
         points.extend(np.linspace(start, end, samples_per_segment, endpoint=False))

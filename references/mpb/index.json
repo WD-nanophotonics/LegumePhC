@@ -1,0 +1,15 @@
+{
+  "schema": "legumephc-mpb-reference-index-v1",
+  "read_only": true,
+  "local_data_used": false,
+  "entries": [
+    {
+      "id": "public-baseline-metadata-example",
+      "status": "unqualified",
+      "source": "public MPB baseline metadata previously checked; no matched record available",
+      "matched_fields": ["lattice", "polarization"],
+      "missing_fields": ["frequency", "E/H fields", "projector", "Berry"],
+      "notes": "Reference index only; daily studies do not read this entry for caching or numerical input."
+    }
+  ]
+}

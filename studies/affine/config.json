@@ -1,0 +1,24 @@
+{
+  "study": "affine",
+  "base_lattice": "square",
+  "linear": [[1.0, 0.18], [0.0, 0.92]],
+  "translation": [0.07, -0.03],
+  "geometry": "SquareCircle",
+  "radius": 0.2,
+  "gmax": 2,
+  "numeig": 3,
+  "target_band_zero_based": 1,
+  "band_path": "identity",
+  "field_grid_size": 8,
+  "efs_grid_size": 5,
+  "polarizations": ["te", "tm"],
+  "berry_bands_zero_based": [1, 2],
+  "berry_rank": 2,
+  "berry_step": 0.02,
+  "qpoint": [0.16, 0.09],
+  "synthetic_dipole": {
+    "qpoints": [[-0.1, -0.1], [-0.1, 0.1], [0.1, 0.1], [0.1, -0.1]],
+    "curvature_coefficients": [2.0, -3.0, 1.0]
+  },
+  "notes": "Nontrivial full affine transform; symmetry is intentionally none."
+}

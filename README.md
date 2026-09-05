@@ -52,3 +52,23 @@ contours), `solve_berry` (rank-1/composite Wilson qualification with raw
 unsymmetrized output), and `compute_berry_dipole` (geometric gradient and
 first moment). Dipole output becomes a physical response only when an
 explicit frequency window and occupation/response weight are supplied.
+
+## Phase C studies
+
+From PyCharm, select `.venv\Scripts\python.exe` and run any study script
+directly. The scripts do not solve on import; each run writes fresh immutable
+records below its own ignored `studies/<name>/results/` directory.
+
+```powershell
+.venv\Scripts\python.exe studies\triangular\study.py
+.venv\Scripts\python.exe studies\square\study.py
+.venv\Scripts\python.exe studies\affine\study.py
+```
+
+`triangular` freezes G15/Circle/G16 and reports verified C3 versus near-C3
+behavior, including separate Berry gate and convergence status. The single
+`gmax=2` Berry smoke is intentionally convergence-unassessed. `square` uses
+the verified one-circle C4 model and Γ–X–M–Γ path.
+`affine` applies the configured full 2×2 transform, ellipse/material-mask
+geometry, TE/TM solves, and reports symmetry `none`. The read-only
+`references/mpb/index.json` file is metadata only and is not read by studies.

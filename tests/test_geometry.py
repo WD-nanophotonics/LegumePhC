@@ -10,6 +10,7 @@ from legumephc.geometry import (
     c3_geometry_residual,
     first_bz_labels,
     first_bz_vertices,
+    first_bz_vertices_physical,
     geometry_spec,
     identity_path,
     m7_orbit,
@@ -101,3 +102,27 @@ def test_lattice_paths_and_generic_affine_labels_are_honest():
     polygon_model = Model2D(polygon, square, affine=distorted.affine)
     source_vertices = polygon_vertices(0.1, 4, 0.0, polygon.centers[0])
     assert np.allclose(polygon_model.effective_geometry.transformed_vertices[0], polygon_model.affine.apply(source_vertices))
+
+
+def test_first_bz_vertices_use_reduced_coordinates_and_paths_stay_inside():
+    square = Lattice2D.square()
+    square_bz = first_bz_vertices(square)
+    assert np.allclose(np.min(square_bz, axis=0), [-0.5, -0.5])
+    assert np.allclose(np.max(square_bz, axis=0), [0.5, 0.5])
+    assert np.allclose(first_bz_vertices_physical(square), 2.0 * math.pi * square_bz)
+
+    triangular = Lattice2D.triangular()
+    triangular_bz = first_bz_vertices(triangular)
+    assert any(np.allclose(vertex, [2.0 / 3.0, 0.0]) for vertex in triangular_bz)
+    _, triangular_path = identity_path(triangular, samples_per_segment=2)
+    assert np.allclose(triangular_path[2], [2.0 / 3.0, 0.0])
+    assert np.allclose(triangular_path[4], [0.5, 1.0 / (2.0 * math.sqrt(3.0))])
+
+    affine = Affine2D(linear=np.array([[1.0, 0.18], [0.0, 0.92]]))
+    effective = Lattice2D(affine.linear @ square.direct_basis, kind="custom")
+    bz = first_bz_vertices(effective)
+    _, path = identity_path(effective, samples_per_segment=5)
+    edges = np.roll(bz, -1, axis=0) - bz
+    relative = path[:, None, :] - bz[None, :, :]
+    cross = edges[None, :, 0] * relative[:, :, 1] - edges[None, :, 1] * relative[:, :, 0]
+    assert np.min(cross) >= -1e-12

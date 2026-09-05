@@ -1,0 +1,24 @@
+{
+  "study": "square",
+  "lattice": "square",
+  "geometry": "SquareCircle",
+  "radius": 0.2,
+  "epsilon_background": 7.29,
+  "epsilon_inclusion": 1.0,
+  "gmax": 2,
+  "numeig": 4,
+  "target_band_zero_based": 1,
+  "band_path": "identity",
+  "field_grid_size": 8,
+  "efs_grid_size": 5,
+  "polarization": "te",
+  "berry_bands_zero_based": [1, 2],
+  "berry_rank": 2,
+  "berry_step": 0.08,
+  "qpoints": [[0.2, 0.07], [-0.07, 0.2], [-0.2, -0.07], [0.07, -0.2]],
+  "synthetic_dipole": {
+    "qpoints": [[-0.1, -0.1], [-0.1, 0.1], [0.1, 0.1], [0.1, -0.1]],
+    "curvature_coefficients": [2.0, -3.0, 1.0]
+  },
+  "notes": "A single circular motif at the square-cell center is a genuine C4 model."
+}
