@@ -1,8 +1,9 @@
 # LegumePhC
 
-Windows-native, pure-Python cross-validation of the MePhC Berry/C3 question
-using [Legume](https://legume.readthedocs.io/).  This repository deliberately
-contains no Thin Flow, Courier, Meep, MPB, WSL, or dataset ledger.
+Canonical Windows-native, pure-Python 2D platform using
+[Legume](https://legume.readthedocs.io/). MePhC/MPB/WSL are legacy read-only
+references only; this repository deliberately contains no Thin Flow, Courier,
+Meep, MPB, WSL, or dataset ledger.
 
 ## PyCharm / Windows setup
 
@@ -87,3 +88,26 @@ separate `.legumephc-preset.json` format and never contain result references.
 Preview refreshes are solver-free; formal calculations run in one exact child
 process and can be cancelled without a background service. User-facing band
 labels are one-based and are mapped to the core's explicit zero-based API.
+
+## Phase E acceptance
+
+Verify the pinned Windows environment and run the finite 18-operation acceptance
+matrix in one foreground command:
+
+```powershell
+.\phase_e_acceptance.cmd --cycles 1 --gmax 2
+```
+
+Each invocation creates a fresh ignored `acceptance/<run-id>/` directory with
+per-operation timing, result identities, immutable records, and a machine-
+generated `manifest.json`; it never resumes or overwrites an earlier run. The
+short matrix covers triangular, square, and affine preview/frequency/band/EFS/
+field/Berry paths and rejects invalid qualification labels. The prepared
+unattended command is:
+
+```powershell
+.\phase_e_acceptance.cmd --duration-hours 6 --cycles 6 --gmax 2
+```
+
+It is a single foreground command expected to run for at least six hours. It
+was prepared but not started during acceptance.
