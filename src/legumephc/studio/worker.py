@@ -187,8 +187,9 @@ def execute_request(request: dict[str, Any], *, progress=None) -> dict[str, Any]
     elif operation == "berry":
         sampling_mode = calculation.get("sampling_mode", "single_plaquette")
         if sampling_mode == "first_bz_grid":
-            from ..berry import first_bz_plaquettes
-            plaquettes = first_bz_plaquettes(model.effective_lattice, grid_size=int(calculation.get("grid_size", 3)), step=float(calculation["berry_step"]))
+            from ..berry import first_bz_sampling
+            sampling = first_bz_sampling(model.effective_lattice, grid_size=int(calculation.get("grid_size", 3)), step=float(calculation["berry_step"]))
+            plaquettes = sampling["plaquettes"]
         elif sampling_mode == "explicit_centers":
             centers = np.asarray(calculation.get("centers", []), dtype=float)
             step = float(calculation["berry_step"])
@@ -198,6 +199,9 @@ def execute_request(request: dict[str, Any], *, progress=None) -> dict[str, Any]
             plaquettes = _plaquette(calculation)
         result = solve_berry(model, plaquettes, gmax=gmax, bands=bands, rank=len(bands), numeig=numeig, pol=pol, convergence_status=calculation.get("convergence_status", "NOT_ASSESSED"), progress=progress)
         arrays = {key: value for key, value in result.items() if isinstance(value, np.ndarray)}
+        if sampling_mode == "first_bz_grid":
+            arrays["sample_centers"] = sampling["sample_centers"]
+            arrays["domain_outline"] = sampling["domain_outline"]
         summary.update({
             "qualification": result["qualification"],
             "raw_unsymmetrized": True,
@@ -208,6 +212,7 @@ def execute_request(request: dict[str, Any], *, progress=None) -> dict[str, Any]
             "actual_numeig": numeig,
             "sampling_domain": sampling_mode,
             "plaquette_count": len(plaquettes),
+            "sampling_lattice": sampling["sampling_lattice"] if sampling_mode == "first_bz_grid" else "explicit_cartesian",
         })
     elif operation == "berry_curvature_dipole":
         selected = source["reference"]["path"]

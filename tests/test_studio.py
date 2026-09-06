@@ -129,6 +129,27 @@ def test_plot_berry_uses_multi_plaquette_centers_and_status(tmp_path):
         plot_record(record, {"berry_vmin": 1.0, "berry_vmax": -1.0})
 
 
+def test_plot_berry_uses_sample_cells_not_small_wilson_loops(tmp_path):
+    centres = np.asarray([[0.0, 0.0], [0.25, 0.0], [0.125, 0.216506350946]])
+    step = 0.005
+    offsets = np.asarray([[-step, -step], [-step, step], [step, step], [step, -step]])
+    plaquettes = centres[:, None, :] + offsets[None, :, :]
+    domain = np.asarray([[-0.25, -0.2], [0.5, -0.2], [0.5, 0.45], [-0.25, 0.45]])
+    record = create_record(
+        tmp_path / "results",
+        identity={"model": "Model2D", "geometry": "x", "affine": {}, "basis": {}, "solver": "test", "operation": "berry"},
+        config={},
+        summary={"status": "succeeded", "operation": "berry", "sampling_lattice": "triangular_reciprocal"},
+        arrays={"qpoints": plaquettes.reshape(-1, 2), "plaquettes": plaquettes, "sample_centers": centres, "domain_outline": domain, "curvature": np.asarray([1.0, -2.0, 0.5])},
+    )
+    figure = plot_record(record)
+    paths = figure.axes[0].collections[0].get_paths()
+    assert len(paths) == 3
+    polygon_area = lambda polygon: abs(float(np.sum(polygon[:, 0] * np.roll(polygon[:, 1], -1) - polygon[:, 1] * np.roll(polygon[:, 0], -1))) / 2.0)
+    assert sum(polygon_area(path.vertices[:-1]) for path in paths) > 100 * sum(polygon_area(loop) for loop in plaquettes)
+    assert np.allclose(figure.axes[0].collections[0].get_array(), [1.0, -2.0, 0.5])
+
+
 def test_plot_efs_reconstructs_grid_contour_and_labels_sparse(tmp_path):
     grid = np.asarray([[x, y] for y in (-0.5, 0.0, 0.5) for x in (-0.5, 0.0, 0.5)])
     mask = np.ones((3, 3), dtype=bool)

@@ -8,9 +8,67 @@ import numpy as np
 from matplotlib.collections import PolyCollection
 from matplotlib.colors import Normalize
 from matplotlib.figure import Figure
+from scipy.spatial import Voronoi
 
 from ..geometry import first_bz_vertices
 from .profile import model_from_case
+
+
+def _clip_half_plane(polygon: np.ndarray, normal: np.ndarray, limit: float, *, tolerance: float = 1e-12) -> np.ndarray:
+    output: list[np.ndarray] = []
+    for start, end in zip(polygon, np.roll(polygon, -1, axis=0)):
+        start_value = float(np.dot(normal, start) - limit)
+        end_value = float(np.dot(normal, end) - limit)
+        start_inside = start_value <= tolerance
+        end_inside = end_value <= tolerance
+        if start_inside:
+            output.append(start)
+        if start_inside != end_inside:
+            fraction = start_value / (start_value - end_value)
+            output.append(start + fraction * (end - start))
+    return np.asarray(output, dtype=float)
+
+
+def sample_cell_polygons(points: np.ndarray, domain_outline: np.ndarray) -> list[np.ndarray]:
+    """Return Voronoi ownership cells clipped to a convex sampling domain."""
+
+    points = np.asarray(points, dtype=float)
+    raw_domain = np.asarray(domain_outline, dtype=float)
+    domain_values: list[np.ndarray] = []
+    for vertex in raw_domain:
+        if not domain_values or np.linalg.norm(vertex - domain_values[-1]) > 1e-12:
+            domain_values.append(vertex)
+    if len(domain_values) > 1 and np.linalg.norm(domain_values[0] - domain_values[-1]) <= 1e-12:
+        domain_values.pop()
+    domain = np.asarray(domain_values, dtype=float)
+    if points.ndim != 2 or points.shape[1] != 2 or len(points) == 0:
+        raise ValueError("sample centres must have shape (N, 2)")
+    if domain.ndim != 2 or domain.shape[1] != 2 or len(domain) < 3:
+        raise ValueError("domain outline must be a polygon")
+    if len(np.unique(np.round(points, 13), axis=0)) != len(points):
+        raise ValueError("sample centres must be unique")
+    neighbours = [set(range(len(points))) - {index} for index in range(len(points))]
+    if len(points) >= 4:
+        try:
+            voronoi = Voronoi(points)
+            neighbours = [set() for _ in points]
+            for first, second in voronoi.ridge_points:
+                neighbours[int(first)].add(int(second))
+                neighbours[int(second)].add(int(first))
+        except Exception:
+            pass
+    cells: list[np.ndarray] = []
+    for index, point in enumerate(points):
+        cell = domain.copy()
+        for other_index in neighbours[index]:
+            other = points[other_index]
+            normal = other - point
+            limit = (float(np.dot(other, other)) - float(np.dot(point, point))) / 2.0
+            cell = _clip_half_plane(cell, normal, limit)
+            if len(cell) == 0:
+                break
+        cells.append(cell)
+    return cells
 
 
 def default_plot_style() -> dict[str, Any]:
@@ -129,15 +187,26 @@ def plot_record(record_path: str | Path, style: dict[str, Any] | None = None) ->
         axis.set_ylabel(options["y_label"] or "qᵧ")
     elif operation in {"solve_berry", "berry"} and "qpoints" in arrays:
         plaquettes = np.asarray(arrays["plaquettes"]) if "plaquettes" in arrays else None
-        points = np.mean(plaquettes, axis=1) if plaquettes is not None else np.asarray(arrays["qpoints"])
+        points = np.asarray(arrays["sample_centers"]) if "sample_centers" in arrays else (np.mean(plaquettes, axis=1) if plaquettes is not None else np.asarray(arrays["qpoints"]))
         values = np.asarray(arrays.get("curvature", np.zeros(len(points)))).reshape(-1)
         if len(values) == len(points):
             norm = _berry_norm(values, options)
             render_mode = options.get("berry_render_mode", "sample_cells")
             if (render_mode == "linear_interpolation" or options.get("berry_interpolation")) and len(points) >= 3:
                 artist = axis.tricontourf(points[:, 0], points[:, 1], values, levels=24, cmap=options.get("cmap", "RdBu_r"), norm=norm)
-            elif plaquettes is not None:
-                artist = PolyCollection(plaquettes, array=values, cmap=options.get("cmap", "RdBu_r"), norm=norm, edgecolors="none")
+            elif len(points) >= 2:
+                domain = np.asarray(arrays["domain_outline"]) if "domain_outline" in arrays else None
+                legacy_sampling = "sample_centers" not in arrays
+                if domain is None:
+                    try:
+                        model = model_from_case(config.get("config", {}).get("case", config.get("case", {})))
+                        domain = first_bz_vertices(model.effective_lattice)
+                    except (KeyError, TypeError, ValueError):
+                        margin = max(float(np.ptp(points[:, 0])), float(np.ptp(points[:, 1])), 1e-3) * 0.05
+                        lower, upper = np.min(points, axis=0) - margin, np.max(points, axis=0) + margin
+                        domain = np.asarray([[lower[0], lower[1]], [upper[0], lower[1]], [upper[0], upper[1]], [lower[0], upper[1]]])
+                cells = sample_cell_polygons(points, domain)
+                artist = PolyCollection(cells, array=values, cmap=options.get("cmap", "RdBu_r"), norm=norm, edgecolors="none", label="legacy Cartesian sampling" if legacy_sampling else "sample-cell tiling")
                 axis.add_collection(artist)
                 axis.autoscale_view()
             else:

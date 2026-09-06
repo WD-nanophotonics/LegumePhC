@@ -38,29 +38,63 @@ def _normalize_plaquettes(plaquettes: np.ndarray) -> tuple[np.ndarray, np.ndarra
     return values, areas
 
 
-def first_bz_plaquettes(lattice, *, grid_size: int = 3, step: float = 0.02) -> np.ndarray:
-    """Return a small batch of counter-clockwise plaquettes inside the first BZ."""
+def _inside_convex_polygon(points: np.ndarray, vertices: np.ndarray, *, tolerance: float = 1e-10) -> np.ndarray:
+    edges = np.roll(vertices, -1, axis=0) - vertices
+    rel = np.asarray(points, dtype=float)[:, None, :] - vertices[None, :, :]
+    cross = edges[None, :, 0] * rel[:, :, 1] - edges[None, :, 1] * rel[:, :, 0]
+    return np.all(cross >= -tolerance, axis=1)
+
+
+def _unique_polygon_vertices(vertices: np.ndarray, *, tolerance: float = 1e-12) -> np.ndarray:
+    cleaned: list[np.ndarray] = []
+    for vertex in np.asarray(vertices, dtype=float):
+        if not cleaned or np.linalg.norm(vertex - cleaned[-1]) > tolerance:
+            cleaned.append(vertex)
+    if len(cleaned) > 1 and np.linalg.norm(cleaned[0] - cleaned[-1]) <= tolerance:
+        cleaned.pop()
+    return np.asarray(cleaned, dtype=float)
+
+
+def first_bz_sampling(lattice, *, grid_size: int = 3, step: float = 0.02) -> dict[str, Any]:
+    """Build reciprocal-lattice sample centres and independent Wilson loops.
+
+    ``grid_size`` controls the centre lattice.  ``step`` controls only the
+    small Cartesian Wilson loop around each centre; it never controls the
+    visualization cell size.
+    """
     if int(grid_size) < 1 or float(step) <= 0:
         raise ValueError("grid_size must be positive and step must be positive")
-    vertices = first_bz_vertices(lattice)
-    lower, upper = np.min(vertices, axis=0), np.max(vertices, axis=0)
-    # Candidate centers are selected from a regular grid and retained only when
-    # all four corners are inside the convex BZ polygon.
-    span = upper - lower
-    xs = np.linspace(lower[0] + span[0] / (grid_size + 1), upper[0] - span[0] / (grid_size + 1), int(grid_size))
-    ys = np.linspace(lower[1] + span[1] / (grid_size + 1), upper[1] - span[1] / (grid_size + 1), int(grid_size))
-    centers = np.stack(np.meshgrid(xs, ys, indexing="xy"), axis=-1).reshape(-1, 2)
-    def inside(points):
-        edges = np.roll(vertices, -1, axis=0) - vertices
-        rel = points[:, None, :] - vertices[None, :, :]
-        cross = edges[None, :, 0] * rel[:, :, 1] - edges[None, :, 1] * rel[:, :, 0]
-        return np.all(cross >= -1e-10, axis=1)
+    grid_size = int(grid_size)
+    vertices = _unique_polygon_vertices(first_bz_vertices(lattice))
+    reciprocal = np.asarray(lattice.reciprocal_basis_reduced, dtype=float)
+    fractional_vertices = (np.linalg.inv(reciprocal) @ vertices.T).T
+    extent = int(np.ceil(np.max(np.abs(fractional_vertices)) * grid_size)) + 2
+    indices = np.asarray([(i, j) for i in range(-extent, extent + 1) for j in range(-extent, extent + 1)], dtype=float)
+    candidates = (reciprocal @ (indices / grid_size).T).T
+    edges = np.roll(vertices, -1, axis=0) - vertices
+    rel = candidates[:, None, :] - vertices[None, :, :]
+    cross = edges[None, :, 0] * rel[:, :, 1] - edges[None, :, 1] * rel[:, :, 0]
+    # Select centres independently of the Wilson-loop step.  Boundary lattice
+    # points are omitted because their periodic ownership is represented by
+    # the adjacent interior cell after clipping to the first BZ.
+    centers = candidates[np.all(cross > 1e-10, axis=1)]
     offsets = np.asarray([[-step, -step], [-step, step], [step, step], [step, -step]])
-    valid = inside((centers[:, None, :] + offsets[None, :, :]).reshape(-1, 2)).reshape(-1, 4).all(axis=1)
-    selected = centers[valid]
+    selected = centers
     if len(selected) == 0:
         raise ValueError("no first-BZ plaquettes fit the requested step/grid_size")
-    return selected[:, None, :] + offsets[None, :, :]
+    selected = selected[np.lexsort((selected[:, 0], selected[:, 1]))]
+    return {
+        "sample_centers": selected,
+        "plaquettes": selected[:, None, :] + offsets[None, :, :],
+        "domain_outline": vertices,
+        "sampling_lattice": f"{lattice.kind}_reciprocal",
+    }
+
+
+def first_bz_plaquettes(lattice, *, grid_size: int = 3, step: float = 0.02) -> np.ndarray:
+    """Return Wilson plaquettes centred on a reciprocal-lattice BZ mesh."""
+
+    return first_bz_sampling(lattice, grid_size=grid_size, step=step)["plaquettes"]
 
 
 def _unique_points(values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
