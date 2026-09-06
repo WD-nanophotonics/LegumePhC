@@ -5,6 +5,7 @@ from pathlib import Path
 import os
 import subprocess
 import sys
+from copy import deepcopy
 from types import SimpleNamespace
 
 import numpy as np
@@ -12,7 +13,7 @@ import numpy as np
 from legumephc.geometry import Affine2D, GeometrySpec, Lattice2D
 from legumephc.model import Model2D
 from legumephc.studio.preview import preview_geometry
-from legumephc.studio.project import add_calculation, copy_calculation, delete_calculation, load_project, migrate_project, new_project, rename_calculation, save_project
+from legumephc.studio.project import add_calculation, copy_calculation, delete_calculation, load_project, migrate_project, new_project, rename_calculation, save_project, validate_project
 
 
 def test_mixed_motif_identity_and_affine_preview_preserve_order():
@@ -55,6 +56,33 @@ def test_v2_roundtrip_migration_and_calculation_isolation(tmp_path):
     migrated = migrate_project(legacy)
     assert migrated["schema"].endswith("v2") and migrated["selected_node"] == {"kind": "calculation", "id": "calc-1"}
     delete_calculation(project, "calc-3")
+
+
+def test_operation_specific_grids_do_not_cross_validate():
+    project = new_project("operation grids")
+    efs = add_calculation(project, name="EFS", operation="efs")
+    # Berry/field grid values are irrelevant to an EFS calculation.  Only the
+    # dedicated EFS grid is required to be at least two.
+    efs["parameters"].update({"operation": "efs", "grid_size": 1, "efs_grid_size": 6})
+    validate_project(project)
+
+
+def test_historical_result_snapshot_survives_calculation_operation_change():
+    project = new_project("history")
+    calculation = project["calculations"][0]
+    band_snapshot = deepcopy(calculation["parameters"])
+    band_snapshot["operation"] = "band_structure"
+    project["results"].append({
+        "id": "result-1",
+        "calculation_id": calculation["id"],
+        "record_reference": {"path": "records/band", "identity": {"operation": "band_structure"}},
+        "model_snapshot": deepcopy(project["model"]),
+        "calculation_snapshot": band_snapshot,
+        "plot": deepcopy(project["plot"]),
+    })
+    calculation["operation"] = "berry"
+    calculation["parameters"]["operation"] = "berry"
+    validate_project(project)
 
 
 def test_direct_runner_fake_operation_writes_one_record_and_default_figure(tmp_path, monkeypatch):

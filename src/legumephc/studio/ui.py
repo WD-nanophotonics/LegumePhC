@@ -183,6 +183,7 @@ class StudioApp(tk.Tk):
         self.project_path = Path(project_path).resolve() if project_path else None
         self.dirty = False
         self.worker: WorkerProcess | None = None
+        self._active_request: dict[str, Any] | None = None
         self._run_started_at: float | None = None
         self.figure = None
         self.canvas = None
@@ -1041,6 +1042,10 @@ class StudioApp(tk.Tk):
                 return
             request = build_worker_request(self.project, self.project_path)
             self.worker = start_worker(request, python_executable=sys.executable, cwd=ROOT)
+            # The UI remains interactive while the worker runs.  Freeze the
+            # exact request so completion cannot be rebound to a calculation
+            # that the user selected or edited in the meantime.
+            self._active_request = json.loads(json.dumps(request))
             self._run_started_at = time.monotonic()
             self.progress_bar.stop()
             self.progress_bar.configure(mode="indeterminate", value=0)
@@ -1053,7 +1058,10 @@ class StudioApp(tk.Tk):
             self._append_log(f"started {calculation['operation']}")
             self.after(100, self._poll_worker)
         except Exception as exc:
+            self.progress_bar.stop()
+            self.progress_bar.configure(mode="determinate", value=0)
             self.calc_status.configure(text=f"Validation failed: {exc}")
+            self.calc_detail.configure(text="No worker started; correct the calculation settings and run again")
 
     def _poll_worker(self) -> None:
         if self.worker is None:
@@ -1078,10 +1086,13 @@ class StudioApp(tk.Tk):
                 raise RuntimeError(result.get("error", "worker failed"))
             project_dir = self.project_path.parent if self.project_path else ROOT
             reference = record_reference(Path(result["record_path"]), project_dir)
-            calculation_id = self.project.get("selected_node", {}).get("id", "calc-1")
-            calculation = next((item for item in self.project.get("calculations", []) if item["id"] == calculation_id), self.project["calculations"][0])
+            active_request = self._active_request or {}
+            calculation_id = active_request.get("calculation_id")
+            calculation = next((item for item in self.project.get("calculations", []) if item["id"] == calculation_id), None)
+            if calculation is None:
+                raise RuntimeError("the calculation used for this run no longer exists")
             result_id = f"result-{len(self.project.get('results', [])) + 1}"
-            self.project["results"].append({"id": result_id, "calculation_id": calculation["id"], "record_reference": reference, "model_snapshot": json.loads(json.dumps(self.project["model"])), "calculation_snapshot": json.loads(json.dumps(calculation["parameters"])), "plot": json.loads(json.dumps(self.project["plot"]))})
+            self.project["results"].append({"id": result_id, "calculation_id": calculation["id"], "record_reference": reference, "model_snapshot": active_request["model_snapshot"], "calculation_snapshot": active_request["calculation_snapshot"], "plot": json.loads(json.dumps(self.project["plot"]))})
             self.project["selected_result"] = reference["path"]
             self.dirty = True
             self._populate_results()
@@ -1098,6 +1109,7 @@ class StudioApp(tk.Tk):
         self.run_button.configure(state="normal")
         self.cancel_button.configure(state="disabled")
         self.worker = None
+        self._active_request = None
         self._run_started_at = None
 
     def _handle_worker_event(self, event: dict[str, Any]) -> None:
@@ -1124,6 +1136,7 @@ class StudioApp(tk.Tk):
         if self.worker is not None:
             self.worker.cancel()
             self.worker = None
+            self._active_request = None
             self.progress_bar.stop()
             self.progress_bar.configure(mode="determinate", value=0)
             self.run_button.configure(state="normal")
@@ -1225,6 +1238,7 @@ class StudioApp(tk.Tk):
         if self.worker is not None:
             self.worker.cancel()
             self.worker = None
+            self._active_request = None
         self.destroy()
 
     def _update_title(self) -> None:

@@ -19,6 +19,18 @@ PRESET_SCHEMA = "legumephc-studio-preset-v1"
 PROJECT_SUFFIX = ".legumephc-studio.json"
 PRESET_SUFFIX = ".legumephc-preset.json"
 
+_RESULT_OPERATION_ALIASES = {
+    "solve_bands": "band_structure",
+    "compute_field_observables": "fields_energy",
+    "solve_efs": "efs",
+    "solve_berry": "berry",
+    "compute_berry_dipole": "berry_curvature_dipole",
+}
+
+
+def _canonical_result_operation(value: Any) -> Any:
+    return _RESULT_OPERATION_ALIASES.get(value, value)
+
 
 class StudioProject(dict):
     """Canonical v2 mapping with non-serialized v1 adapter views."""
@@ -39,7 +51,14 @@ class StudioProject(dict):
             dict.__getitem__(self, "calculations")[0]["operation"] = value.get("operation", dict.__getitem__(self, "calculations")[0]["operation"])
             return
         if key == "records" and "results" in self:
-            dict.__setitem__(self, "results", [{"id": f"result-{index}", "calculation_id": "calc-1", "record_reference": item, "model_snapshot": deepcopy(dict.__getitem__(self, "model")), "calculation_snapshot": deepcopy(dict.__getitem__(self, "calculations")[0]["parameters"]), "plot": deepcopy(dict.__getitem__(self, "plot"))} for index, item in enumerate(value, start=1)])
+            results = []
+            for index, item in enumerate(value, start=1):
+                snapshot = deepcopy(dict.__getitem__(self, "calculations")[0]["parameters"])
+                record_operation = item.get("identity", {}).get("operation")
+                if record_operation is not None:
+                    snapshot["operation"] = _canonical_result_operation(record_operation)
+                results.append({"id": f"result-{index}", "calculation_id": "calc-1", "record_reference": item, "model_snapshot": deepcopy(dict.__getitem__(self, "model")), "calculation_snapshot": snapshot, "plot": deepcopy(dict.__getitem__(self, "plot"))})
+            dict.__setitem__(self, "results", results)
             return
         dict.__setitem__(self, key, value)
 
@@ -202,8 +221,10 @@ def _validate_calculation(calculation: dict[str, Any]) -> None:
     _require(all(int(value) >= 1 for value in calculation.get("composite_bands_one_based", [])), "composite bands must be one-based")
     if operation == "band_structure":
         _require(int(calculation.get("samples_per_segment", 16)) >= 2, "samples_per_segment must be at least 2")
-    if operation in {"fields_energy", "efs"}:
-        _require(int(calculation.get("grid_size", calculation.get("efs_grid_size", 0))) >= 2, "grid size must be at least 2")
+    if operation == "fields_energy":
+        _require(int(calculation.get("grid_size", 0)) >= 2, "field grid size must be at least 2")
+    if operation == "efs":
+        _require(int(calculation.get("efs_grid_size", 0)) >= 2, "EFS grid size must be at least 2")
     if operation == "berry":
         _require(float(calculation.get("berry_step", 0)) > 0, "berry_step must be positive")
         mode = calculation.get("sampling_mode", "single_plaquette")
@@ -242,8 +263,11 @@ def validate_project(project: dict[str, Any]) -> dict[str, Any]:
             _require(result.get("calculation_id") in ids, "result references an unknown calculation")
             _require(isinstance(result.get("id"), str) and result.get("id"), "result ids must be stable")
             _require(isinstance(result.get("model_snapshot"), dict) and isinstance(result.get("calculation_snapshot"), dict), "results must contain model and calculation snapshots")
-            bound = next(item for item in project["calculations"] if item["id"] == result["calculation_id"])
-            _require(result["calculation_snapshot"].get("operation") == bound["operation"], "result calculation snapshot is bound to the wrong calculation")
+            snapshot_operation = result["calculation_snapshot"].get("operation")
+            reference_operation = _canonical_result_operation(result.get("record_reference", {}).get("identity", {}).get("operation"))
+            _require(snapshot_operation in {"frequency_at_k", "band_structure", "fields_energy", "efs", "berry", "berry_curvature_dipole"}, "result calculation snapshot has an unsupported operation")
+            if reference_operation is not None:
+                _require(reference_operation == snapshot_operation, "result record identity disagrees with its calculation snapshot")
             _require("geometry" in result["model_snapshot"] and "operation" not in result["model_snapshot"], "result model snapshot is malformed")
         case = project["model"]
         calculation = project["calculations"][0]["parameters"]
