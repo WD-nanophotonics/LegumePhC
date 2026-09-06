@@ -43,7 +43,7 @@ def test_controlled_shape_choices_map_to_canonical_geometry():
 def test_default_and_model_name_follow_lattice_and_motif():
     project = new_project()
     assert project["model"]["lattice"] == "triangular"
-    assert project["model"]["geometry"]["center"] == [0.0, 0.0]
+    assert project["model"]["geometry"]["center"] == [0.5, 0.0]
     assert project["model"]["geometry"]["radius"] == 0.2
     assert model_name("square", [{"kind": "polygon"}]) == "SquarePolygon"
 

@@ -45,6 +45,13 @@ PROJECTS_DIR = ROOT / "projects"
 PRESETS_DIR = ROOT / "presets"
 FIGURES_DIR = ROOT / "figures"
 
+BERRY_TARGET_LABELS = {"single_band": "Single band", "composite_subspace": "Composite subspace", "legacy_noncontiguous": "Legacy non-contiguous"}
+BERRY_TARGET_VALUES = {value: key for key, value in BERRY_TARGET_LABELS.items()}
+BERRY_SAMPLING_LABELS = {"single_plaquette": "Single plaquette", "first_bz_grid": "First BZ grid", "explicit_centers": "Explicit centres"}
+BERRY_SAMPLING_VALUES = {value: key for key, value in BERRY_SAMPLING_LABELS.items()}
+BERRY_RENDER_LABELS = {"sample_cells": "Sample-cell tiling", "linear_interpolation": "Linear interpolation"}
+BERRY_RENDER_VALUES = {value: key for key, value in BERRY_RENDER_LABELS.items()}
+
 
 def _control_text(value: Any) -> Any:
     """Normalize nullable plot values before assigning them to Tk variables."""
@@ -92,10 +99,12 @@ class MotifDialog(tk.Toplevel):
         self.resizable(False, False)
         self.result: dict[str, Any] | None = None
         self.representation = representation
+        self._initial_shape = shape_choice(str(motif.get("kind", "circle")), motif.get("sides"))
+        self._initial_name = str(motif.get("name", ""))
         center = motif.get("center", [0.0, 0.0])
         self.variables = {
             "name": tk.StringVar(self, str(motif.get("name", ""))),
-            "shape": tk.StringVar(self, shape_choice(str(motif.get("kind", "circle")), motif.get("sides"))),
+            "shape": tk.StringVar(self, self._initial_shape),
             "radius": tk.StringVar(self, str(motif.get("radius", 0.2))),
             "center_x": tk.StringVar(self, str(center[0])),
             "center_y": tk.StringVar(self, str(center[1])),
@@ -159,8 +168,10 @@ class MotifDialog(tk.Toplevel):
             epsilon = epsilon_from_editor(self.variables["material"].get(), self.representation)
             angle = 0.0 if kind == "circle" else safe_number(self.variables["angle"].get())
             default_name = self.variables["shape"].get().replace(" ", "")
+            entered_name = self.variables["name"].get().strip()
+            generated_before = not entered_name or entered_name.lower().endswith(self._initial_shape.replace(" ", "").lower())
             self.result = {
-                "name": self.variables["name"].get().strip() or default_name,
+                "name": default_name if generated_before else entered_name,
                 "kind": kind,
                 "radius": radius,
                 "center": center,
@@ -171,6 +182,82 @@ class MotifDialog(tk.Toplevel):
         except (ValueError, TypeError) as exc:
             self.error.configure(text=str(exc))
             return
+        self.destroy()
+
+
+class BerryCentersDialog(tk.Toplevel):
+    """Structured editor for explicit reciprocal-space centres."""
+
+    def __init__(self, parent: tk.Misc, centers: list[list[float]]):
+        super().__init__(parent)
+        self.title("Explicit Berry centres")
+        self.transient(parent)
+        self.result: list[list[float]] | None = None
+        self.qx = tk.StringVar(self, "0.0")
+        self.qy = tk.StringVar(self, "0.0")
+        body = ttk.Frame(self, padding=10)
+        body.pack(fill="both", expand=True)
+        self.tree = ttk.Treeview(body, columns=("qx", "qy"), show="headings", height=8)
+        self.tree.heading("qx", text="qₓ")
+        self.tree.heading("qy", text="qᵧ")
+        self.tree.pack(fill="both", expand=True)
+        for index, center in enumerate(centers):
+            self.tree.insert("", "end", iid=f"center-{index}", values=(center[0], center[1]))
+        row = ttk.Frame(body)
+        row.pack(fill="x", pady=6)
+        ttk.Label(row, text="qₓ").pack(side="left")
+        ttk.Entry(row, textvariable=self.qx, width=12).pack(side="left", padx=3)
+        ttk.Label(row, text="qᵧ").pack(side="left")
+        ttk.Entry(row, textvariable=self.qy, width=12).pack(side="left", padx=3)
+        ttk.Button(row, text="Add", command=self._add).pack(side="left", padx=3)
+        ttk.Button(row, text="Update", command=self._update).pack(side="left", padx=3)
+        ttk.Button(row, text="Remove", command=self._remove).pack(side="left", padx=3)
+        self.error = ttk.Label(body, foreground="#b00020")
+        self.error.pack(anchor="w")
+        buttons = ttk.Frame(body)
+        buttons.pack(fill="x", pady=(6, 0))
+        ttk.Button(buttons, text="Cancel", command=self.destroy).pack(side="right")
+        ttk.Button(buttons, text="Apply", command=self._apply).pack(side="right", padx=4)
+        self.tree.bind("<<TreeviewSelect>>", lambda _event: self._load_selected())
+        self.grab_set()
+
+    def _values(self) -> tuple[float, float]:
+        return safe_number(self.qx.get()), safe_number(self.qy.get())
+
+    def _add(self) -> None:
+        try:
+            values = self._values()
+        except ValueError as exc:
+            self.error.configure(text=str(exc))
+            return
+        self.tree.insert("", "end", values=values)
+
+    def _update(self) -> None:
+        selected = self.tree.selection()
+        if not selected:
+            return
+        try:
+            self.tree.item(selected[0], values=self._values())
+        except ValueError as exc:
+            self.error.configure(text=str(exc))
+
+    def _remove(self) -> None:
+        for item in self.tree.selection():
+            self.tree.delete(item)
+
+    def _load_selected(self) -> None:
+        selected = self.tree.selection()
+        if selected:
+            qx, qy = self.tree.item(selected[0], "values")
+            self.qx.set(qx)
+            self.qy.set(qy)
+
+    def _apply(self) -> None:
+        values = [[float(value) for value in self.tree.item(item, "values")] for item in self.tree.get_children()]
+        if not values:
+            self.error.configure(text="Add at least one explicit centre")
+            return
+        self.result = values
         self.destroy()
 
 
@@ -194,10 +281,10 @@ class StudioApp(tk.Tk):
         self.plot_host = None
         self._vars: dict[str, tk.Variable] = {}
         self._field_widgets: dict[str, list[tk.Widget]] = {}
-        self._calculation_field_names = {"qx", "qy", "band", "composite", "gmax", "numeig", "field_grid", "efs_grid", "berry_step", "samples", "berry_grid", "source_result", "response_weights"}
+        self._calculation_field_names = {"qx", "qy", "band", "composite", "gmax", "numeig", "field_grid", "efs_grid", "berry_step", "samples", "berry_grid", "berry_first", "berry_last", "source_result", "response_weights"}
         self._style_widgets: dict[str, list[tk.Widget]] = {}
         self._build()
-        for name in ("width_px", "height_px", "dpi", "title", "x_label", "y_label", "x_limits", "y_limits", "linewidth", "marker_size", "cmap", "component_index", "field_quantity", "grid", "legend", "band_line", "band_markers", "berry_coloring", "berry_interpolation", "colorbar", "berry_vmin", "berry_vmax"):
+        for name in ("width_px", "height_px", "dpi", "title", "x_label", "y_label", "x_limits", "y_limits", "linewidth", "marker_size", "cmap", "component_index", "field_quantity", "grid", "legend", "band_line", "band_markers", "berry_render_mode", "show_sample_centers", "berry_interpolation", "colorbar", "berry_vmin", "berry_vmax"):
             if name in self._vars:
                 self._vars[name].trace_add("write", self._mark_style_pending)
         self._populate()
@@ -217,6 +304,9 @@ class StudioApp(tk.Tk):
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self._close)
         menu.add_cascade(label="Project", menu=file_menu)
+        help_menu = tk.Menu(menu, tearoff=False)
+        help_menu.add_command(label="Berry targets and q coordinates", command=self._show_berry_help)
+        menu.add_cascade(label="Help", menu=help_menu)
         self.config(menu=menu)
 
         main = ttk.PanedWindow(self, orient="horizontal")
@@ -255,6 +345,15 @@ class StudioApp(tk.Tk):
         self._loading = False
         for name in ("lattice", "lattice_constant", "material_representation", "background_material", "deformation_kind", "deformation_factor", "deformation_angle", "b11", "b12", "b21", "b22", "a11", "a12", "a21", "a22", "tx", "ty"):
             self._vars[name].trace_add("write", self._mark_pending)
+
+    def _show_berry_help(self) -> None:
+        messagebox.showinfo(
+            "Berry targets and q coordinates",
+            "Single band computes the Berry curvature of one band.\n\n"
+            "Composite subspace computes the trace of the non-Abelian curvature for every band from First through Last; it is not the curvature of either endpoint alone.\n\n"
+            "qₓ and qᵧ are reduced Cartesian reciprocal coordinates with k = 2πq/a. They are used only by Single plaquette; First BZ grid constructs its centres automatically.",
+            parent=self,
+        )
 
     def _var(self, name: str, value: Any = "") -> tk.Variable:
         variable = tk.StringVar(self, str(value))
@@ -302,6 +401,7 @@ class StudioApp(tk.Tk):
         motif_buttons.grid(row=7, column=0, columnspan=2, sticky="ew", padx=4, pady=2)
         ttk.Button(motif_buttons, text="Add", command=self._add_motif).pack(side="left")
         ttk.Button(motif_buttons, text="Edit", command=self._edit_motif).pack(side="left", padx=2)
+        ttk.Button(motif_buttons, text="Center in cell", command=self._center_motif).pack(side="left", padx=2)
         ttk.Button(motif_buttons, text="Remove", command=self._remove_motif).pack(side="left")
         ttk.Label(controls, text="Deformation").grid(row=8, column=0, sticky="w", padx=4, pady=(8, 2))
         self.deformation_menu = ttk.Combobox(controls, textvariable=self._var("deformation_kind"), values=("none", "uniaxial", "custom"), state="readonly", width=13)
@@ -414,19 +514,29 @@ class StudioApp(tk.Tk):
         self.operation_menu = ttk.Combobox(controls, textvariable=self._var("operation"), values=("frequency_at_k", "band_structure", "fields_energy", "efs", "berry", "berry_curvature_dipole"), state="readonly", width=24)
         self.operation_menu.grid(row=0, column=1, padx=4, pady=2)
         self.operation_menu.bind("<<ComboboxSelected>>", lambda _event: self._operation_changed())
-        for row, label, name in ((1, "q x", "qx"), (2, "q y", "qy"), (3, "Band (one-based)", "band"), (4, "Composite bands (one-based)", "composite"), (5, "gmax", "gmax"), (6, "numeig", "numeig"), (7, "Field grid size", "field_grid"), (8, "EFS grid size", "efs_grid"), (9, "Berry step", "berry_step")):
+        for row, label, name in ((1, "qₓ (reduced Cartesian)", "qx"), (2, "qᵧ (reduced Cartesian)", "qy"), (3, "Band (one-based)", "band"), (4, "Composite bands (one-based)", "composite"), (5, "gmax", "gmax"), (6, "Eigenmodes", "numeig"), (7, "Field grid size", "field_grid"), (8, "EFS grid size", "efs_grid"), (9, "Berry step", "berry_step")):
             self._label_entry(controls, row, label, name, 24 if name == "composite" else 12)
         ttk.Label(controls, text="Polarization").grid(row=10, column=0, sticky="w", padx=4, pady=2)
         self.polarization_widget = ttk.Combobox(controls, textvariable=self._var("polarization"), values=("te", "tm"), state="readonly", width=12)
         self.polarization_widget.grid(row=10, column=1, sticky="w", padx=4, pady=2)
         self._label_entry(controls, 11, "Path samples/segment", "samples", 12)
+        self.berry_target_label = ttk.Label(controls, text="Berry target")
+        self.berry_target_label.grid(row=12, column=0, sticky="w", padx=4, pady=2)
+        self.berry_target_widget = ttk.Combobox(controls, textvariable=self._var("berry_target"), values=("Single band", "Composite subspace"), state="readonly", width=20)
+        self.berry_target_widget.grid(row=12, column=1, sticky="w", padx=4, pady=2)
+        self.berry_target_widget.bind("<<ComboboxSelected>>", lambda _event: self._berry_controls_changed())
+        self._label_entry(controls, 13, "First composite band", "berry_first", 12)
+        self._label_entry(controls, 14, "Last composite band", "berry_last", 12)
         self.berry_sampling_label = ttk.Label(controls, text="Berry sampling")
-        self.berry_sampling_label.grid(row=12, column=0, sticky="w", padx=4, pady=2)
-        self.berry_sampling_widget = ttk.Combobox(controls, textvariable=self._var("berry_sampling"), values=("single_plaquette", "first_bz_grid", "explicit_centers"), state="readonly", width=20)
-        self.berry_sampling_widget.grid(row=12, column=1, sticky="w", padx=4, pady=2)
-        self._label_entry(controls, 13, "Berry grid size", "berry_grid", 12)
+        self.berry_sampling_label.grid(row=15, column=0, sticky="w", padx=4, pady=2)
+        self.berry_sampling_widget = ttk.Combobox(controls, textvariable=self._var("berry_sampling"), values=("Single plaquette", "First BZ grid", "Explicit centres"), state="readonly", width=20)
+        self.berry_sampling_widget.grid(row=15, column=1, sticky="w", padx=4, pady=2)
+        self.berry_sampling_widget.bind("<<ComboboxSelected>>", lambda _event: self._berry_controls_changed())
+        self._label_entry(controls, 16, "Berry grid size", "berry_grid", 12)
+        self.berry_centers_button = ttk.Button(controls, text="Edit explicit centres…", command=self._edit_berry_centers)
+        self.berry_centers_button.grid(row=17, column=0, columnspan=2, sticky="ew", padx=4, pady=2)
         buttons = ttk.Frame(controls)
-        buttons.grid(row=14, column=0, columnspan=2, sticky="ew", padx=4, pady=6)
+        buttons.grid(row=18, column=0, columnspan=2, sticky="ew", padx=4, pady=6)
         self.run_button = ttk.Button(buttons, text="Run", command=self._run)
         self.run_button.pack(side="left")
         self.cancel_button = ttk.Button(buttons, text="Cancel", command=self._cancel, state="disabled")
@@ -438,13 +548,13 @@ class StudioApp(tk.Tk):
         self.plot_after = ttk.Checkbutton(buttons, text="Plot after Run", variable=self._plot_after_var)
         self.plot_after.pack(side="left")
         self.progress_bar = ttk.Progressbar(controls, mode="determinate", maximum=100)
-        self.progress_bar.grid(row=15, column=0, columnspan=2, sticky="ew", padx=4, pady=(2, 0))
+        self.progress_bar.grid(row=19, column=0, columnspan=2, sticky="ew", padx=4, pady=(2, 0))
         self.calc_status = ttk.Label(controls, text="Ready", wraplength=410)
-        self.calc_status.grid(row=16, column=0, columnspan=2, sticky="w", padx=4, pady=(2, 0))
+        self.calc_status.grid(row=20, column=0, columnspan=2, sticky="w", padx=4, pady=(2, 0))
         self.calc_detail = ttk.Label(controls, text="", wraplength=410, foreground="#555555")
-        self.calc_detail.grid(row=17, column=0, columnspan=2, sticky="w", padx=4)
-        self._label_entry(controls, 18, "Berry source result", "source_result", 28)
-        self._label_entry(controls, 19, "Response weights", "response_weights", 28)
+        self.calc_detail.grid(row=21, column=0, columnspan=2, sticky="w", padx=4)
+        self._label_entry(controls, 22, "Berry source result", "source_result", 28)
+        self._label_entry(controls, 23, "Response weights", "response_weights", 28)
         self._operation_changed()
 
     def _operation_changed(self) -> None:
@@ -456,9 +566,22 @@ class StudioApp(tk.Tk):
             "band_structure": {"samples"},
             "fields_energy": {"qx", "qy", "composite", "field_grid"},
             "efs": {"composite", "efs_grid"},
-            "berry": {"composite", "berry_step", "berry_grid", "berry_sampling"},
+            "berry": {"berry_step", "berry_sampling"},
             "berry_curvature_dipole": set(),
         }.get(operation, set()))
+        if operation == "berry":
+            sampling = BERRY_SAMPLING_VALUES.get(self._vars.get("berry_sampling").get(), self._vars.get("berry_sampling").get()) if self._vars.get("berry_sampling") else "single_plaquette"
+            target = BERRY_TARGET_VALUES.get(self._vars.get("berry_target").get(), self._vars.get("berry_target").get()) if self._vars.get("berry_target") else "single_band"
+            if sampling == "single_plaquette":
+                visible.update({"qx", "qy"})
+            elif sampling == "first_bz_grid":
+                visible.add("berry_grid")
+            if target == "single_band":
+                visible.add("band")
+            elif target == "legacy_noncontiguous":
+                visible.add("composite")
+            else:
+                visible.update({"berry_first", "berry_last"})
         if operation == "berry_curvature_dipole":
             visible.update({"source_result", "response_weights"})
         for name, widgets in self._field_widgets.items():
@@ -473,7 +596,41 @@ class StudioApp(tk.Tk):
         if hasattr(self, "berry_sampling_widget"):
             (self.berry_sampling_widget.grid if "berry_sampling" in visible else self.berry_sampling_widget.grid_remove)()
             (self.berry_sampling_label.grid if "berry_sampling" in visible else self.berry_sampling_label.grid_remove)()
+        if hasattr(self, "berry_target_widget"):
+            (self.berry_target_widget.grid if operation == "berry" else self.berry_target_widget.grid_remove)()
+            (self.berry_target_label.grid if operation == "berry" else self.berry_target_label.grid_remove)()
+            sampling_value = BERRY_SAMPLING_VALUES.get(self._vars["berry_sampling"].get(), self._vars["berry_sampling"].get())
+            (self.berry_centers_button.grid if operation == "berry" and sampling_value == "explicit_centers" else self.berry_centers_button.grid_remove)()
+        if "band" in self._field_widgets:
+            self._field_widgets["band"][0].configure(text="Target band (one-based)" if operation == "berry" else "Band (one-based)")
+        if "numeig" in self._field_widgets:
+            self._field_widgets["numeig"][1].configure(state="readonly" if operation == "berry" else "normal")
+        worker = getattr(self, "worker", None)
+        if hasattr(self, "run_button") and (worker is None or worker.poll() is not None):
+            selected_target = BERRY_TARGET_VALUES.get(self._vars["berry_target"].get(), self._vars["berry_target"].get()) if self._vars.get("berry_target") else None
+            legacy = operation == "berry" and selected_target == "legacy_noncontiguous"
+            self.run_button.configure(state="disabled" if legacy else "normal")
+            if legacy:
+                self.calc_status.configure(text="Legacy non-contiguous Berry selection is read-only; copy it and choose a contiguous target")
         self._update_style_visibility(operation)
+
+    def _berry_controls_changed(self) -> None:
+        target = BERRY_TARGET_VALUES.get(self._vars["berry_target"].get(), self._vars["berry_target"].get())
+        if target == "single_band":
+            required = int(float(self._vars["band"].get())) + 1
+        else:
+            required = int(float(self._vars["berry_last"].get())) + 1
+        self._vars["numeig"].set(required)
+        self._operation_changed()
+        self._mark_pending()
+
+    def _edit_berry_centers(self) -> None:
+        calculation = self._selected_calculation_entry()["parameters"]
+        dialog = BerryCentersDialog(self, list(calculation.get("centers", [])))
+        self.wait_window(dialog)
+        if dialog.result is not None:
+            calculation["centers"] = dialog.result
+            self._mark_pending()
 
     def _build_results_tab(self) -> None:
         frame = ttk.Frame(self.results_tab)
@@ -503,8 +660,11 @@ class StudioApp(tk.Tk):
         self._style_widgets["field_quantity"] = [controls.grid_slaves(row=14, column=0)[0], field_quantity]
         self._style_bool(controls, 15, "Grid", "grid")
         self._style_bool(controls, 16, "Legend", "legend")
-        self._style_bool(controls, 17, "Berry samples", "berry_coloring")
-        self._style_bool(controls, 18, "Berry interpolation", "berry_interpolation")
+        ttk.Label(controls, text="Berry rendering").grid(row=17, column=0, sticky="w", padx=4, pady=2)
+        berry_render = ttk.Combobox(controls, textvariable=self._var("berry_render_mode"), values=("Sample-cell tiling", "Linear interpolation"), state="readonly", width=20)
+        berry_render.grid(row=17, column=1, sticky="w", padx=4, pady=2)
+        self._style_widgets["berry_render_mode"] = [controls.grid_slaves(row=17, column=0)[0], berry_render]
+        self._style_bool(controls, 18, "Show sample centres", "show_sample_centers")
         self._style_bool(controls, 19, "Colorbar", "colorbar")
         self._label_entry(controls, 20, "Berry vmin", "berry_vmin", 12)
         self._label_entry(controls, 21, "Berry vmax", "berry_vmax", 12)
@@ -530,7 +690,7 @@ class StudioApp(tk.Tk):
         public = {"width_px", "height_px", "dpi", "title", "x_label", "y_label", "grid", "legend", "x_limits", "y_limits"}
         specific = {
             "solve_bands": {"band_line", "band_markers", "linewidth", "marker_size"}, "band_structure": {"band_line", "band_markers", "linewidth", "marker_size"},
-            "solve_berry": {"cmap", "berry_interpolation", "berry_vmin", "berry_vmax", "colorbar", "berry_coloring"}, "berry": {"cmap", "berry_interpolation", "berry_vmin", "berry_vmax", "colorbar", "berry_coloring"},
+            "solve_berry": {"cmap", "berry_render_mode", "show_sample_centers", "berry_vmin", "berry_vmax", "colorbar"}, "berry": {"cmap", "berry_render_mode", "show_sample_centers", "berry_vmin", "berry_vmax", "colorbar"},
             "solve_efs": {"component_index", "cmap", "colorbar"}, "efs": {"component_index", "cmap", "colorbar"},
             "compute_field_observables": {"field_quantity", "component_index", "cmap", "colorbar"}, "fields_energy": {"field_quantity", "component_index", "cmap", "colorbar"},
             "compute_berry_dipole": {"component_index", "cmap", "colorbar"}, "berry_curvature_dipole": {"component_index", "cmap", "colorbar"},
@@ -566,8 +726,11 @@ class StudioApp(tk.Tk):
         }
         selected_id = self.project.get("selected_node", {}).get("id")
         calculation = next((item["parameters"] for item in self.project.get("calculations", []) if item["id"] == selected_id), self.project["calculation"])
-        values.update({"operation": calculation["operation"], "qx": calculation["qpoint"][0], "qy": calculation["qpoint"][1], "band": calculation["band_one_based"], "composite": ",".join(map(str, calculation["composite_bands_one_based"])), "gmax": calculation["gmax"], "numeig": calculation["numeig"], "polarization": calculation["polarization"], "field_grid": calculation["grid_size"], "efs_grid": calculation["efs_grid_size"], "berry_step": calculation["berry_step"], "samples": calculation.get("samples_per_segment", 16), "berry_sampling": calculation.get("sampling_mode", "single_plaquette"), "berry_grid": calculation.get("grid_size", 3), "source_result": calculation.get("berry_record_path", ""), "response_weights": ",".join(map(str, calculation.get("response_weights") or []))})
+        target_mode = calculation.get("berry_target_mode", "single_band" if len(calculation.get("composite_bands_one_based", [])) == 1 else "composite_subspace")
+        sampling_mode = calculation.get("sampling_mode", "single_plaquette")
+        values.update({"operation": calculation["operation"], "qx": calculation["qpoint"][0], "qy": calculation["qpoint"][1], "band": calculation["band_one_based"], "composite": ",".join(map(str, calculation["composite_bands_one_based"])), "berry_target": BERRY_TARGET_LABELS.get(target_mode, target_mode), "berry_first": calculation.get("berry_first_band", min(calculation.get("composite_bands_one_based", [2]))), "berry_last": calculation.get("berry_last_band", max(calculation.get("composite_bands_one_based", [2, 3]))), "gmax": calculation["gmax"], "numeig": calculation["numeig"], "polarization": calculation["polarization"], "field_grid": calculation["grid_size"], "efs_grid": calculation["efs_grid_size"], "berry_step": calculation["berry_step"], "samples": calculation.get("samples_per_segment", 16), "berry_sampling": BERRY_SAMPLING_LABELS.get(sampling_mode, sampling_mode), "berry_grid": calculation.get("grid_size", 3), "source_result": calculation.get("berry_record_path", ""), "response_weights": ",".join(map(str, calculation.get("response_weights") or []))})
         values.update(self.project["plot"])
+        values["berry_render_mode"] = BERRY_RENDER_LABELS.get(values.get("berry_render_mode", "sample_cells"), values.get("berry_render_mode"))
         for name in ("x_limits", "y_limits"):
             values[name] = _control_text(values.get(name))
         for name in ("berry_vmin", "berry_vmax"):
@@ -631,7 +794,10 @@ class StudioApp(tk.Tk):
         entry = self._selected_calculation_entry()
         calculation = entry["parameters"]
         self._loading = True
-        values = {"operation": calculation.get("operation", entry.get("operation", "frequency_at_k")), "qx": calculation.get("qpoint", [0.2, 0.07])[0], "qy": calculation.get("qpoint", [0.2, 0.07])[1], "band": calculation.get("band_one_based", 2), "composite": ",".join(map(str, calculation.get("composite_bands_one_based", [2, 3]))), "gmax": calculation.get("gmax", 2), "numeig": calculation.get("numeig", 4), "polarization": calculation.get("polarization", "te"), "field_grid": calculation.get("grid_size", 8), "efs_grid": calculation.get("efs_grid_size", 5), "berry_step": calculation.get("berry_step", 0.02), "samples": calculation.get("samples_per_segment", 16), "berry_sampling": calculation.get("sampling_mode", "single_plaquette"), "berry_grid": calculation.get("grid_size", 3)}
+        bands = calculation.get("composite_bands_one_based", [2])
+        target_mode = calculation.get("berry_target_mode", "single_band" if len(bands) == 1 else "composite_subspace")
+        sampling_mode = calculation.get("sampling_mode", "single_plaquette")
+        values = {"operation": calculation.get("operation", entry.get("operation", "frequency_at_k")), "qx": calculation.get("qpoint", [0.2, 0.07])[0], "qy": calculation.get("qpoint", [0.2, 0.07])[1], "band": calculation.get("band_one_based", 2), "composite": ",".join(map(str, bands)), "berry_target": BERRY_TARGET_LABELS.get(target_mode, target_mode), "berry_first": calculation.get("berry_first_band", min(bands)), "berry_last": calculation.get("berry_last_band", max(bands)), "gmax": calculation.get("gmax", 2), "numeig": calculation.get("numeig", 3), "polarization": calculation.get("polarization", "te"), "field_grid": calculation.get("grid_size", 8), "efs_grid": calculation.get("efs_grid_size", 5), "berry_step": calculation.get("berry_step", 0.02), "samples": calculation.get("samples_per_segment", 16), "berry_sampling": BERRY_SAMPLING_LABELS.get(sampling_mode, sampling_mode), "berry_grid": calculation.get("grid_size", 3)}
         for name, value in values.items():
             if name in self._vars:
                 self._vars[name].set(value)
@@ -762,7 +928,7 @@ class StudioApp(tk.Tk):
         representation = self._vars["material_representation"].get()
         dialog = MotifDialog(
             self,
-            motif={"name": f"Circle {index}", "kind": "circle", "radius": 0.2, "center": [0.0, 0.0], "epsilon": 1.0, "sides": 6, "angle_degrees": 0.0},
+            motif={"name": f"Circle {index}", "kind": "circle", "radius": 0.2, "center": self._current_cell_center().tolist(), "epsilon": 1.0, "sides": 6, "angle_degrees": 0.0},
             representation=representation,
             title="Add motif",
         )
@@ -823,6 +989,29 @@ class StudioApp(tk.Tk):
         self._mark_pending()
         self._refresh_preview()
 
+    def _center_motif(self) -> None:
+        selection = self.motif_tree.selection()
+        if not selection:
+            return
+        centre = self._current_cell_center()
+        item = selection[0]
+        values = list(self.motif_tree.item(item, "values"))
+        values[3] = json.dumps(centre.tolist())
+        self.motif_tree.item(item, values=values)
+        self._mark_pending()
+        self._refresh_preview()
+
+    def _current_cell_center(self) -> np.ndarray:
+        lattice = self._vars["lattice"].get()
+        scale = safe_number(self._vars["lattice_constant"].get())
+        if lattice == "triangular":
+            basis = np.asarray([[0.5, 0.5], [3.0 ** 0.5 / 2.0, -3.0 ** 0.5 / 2.0]]) * scale
+        elif lattice == "square":
+            basis = np.eye(2) * scale
+        else:
+            basis = np.asarray([[safe_number(self._vars["b11"].get()), safe_number(self._vars["b12"].get())], [safe_number(self._vars["b21"].get()), safe_number(self._vars["b22"].get())]])
+        return 0.5 * (basis[:, 0] + basis[:, 1])
+
     def _calculation_from_controls(self) -> dict[str, Any]:
         calculation = dict(self._selected_calculation_entry()["parameters"])
         operation = self._vars["operation"].get()
@@ -831,7 +1020,28 @@ class StudioApp(tk.Tk):
             grid_size = int(float(self._vars["field_grid"].get()))
         elif operation == "berry":
             grid_size = int(float(self._vars["berry_grid"].get()))
-        calculation.update({"operation": operation, "qpoint": [float(self._vars["qx"].get()), float(self._vars["qy"].get())], "band_one_based": int(float(self._vars["band"].get())), "composite_bands_one_based": [int(value.strip()) for value in self._vars["composite"].get().split(",") if value.strip()], "gmax": float(self._vars["gmax"].get()), "numeig": int(float(self._vars["numeig"].get())), "polarization": self._vars["polarization"].get(), "grid_size": grid_size, "efs_grid_size": int(float(self._vars["efs_grid"].get())), "berry_step": float(self._vars["berry_step"].get()), "samples_per_segment": int(float(self._vars["samples"].get())), "sampling_mode": self._vars["berry_sampling"].get(), "berry_record_path": self._vars["source_result"].get() or None, "response_weights": [float(value.strip()) for value in self._vars["response_weights"].get().split(",") if value.strip()] or None})
+        raw_target = self._vars.get("berry_target").get() if self._vars.get("berry_target") else calculation.get("berry_target_mode", "single_band")
+        target_mode = BERRY_TARGET_VALUES.get(raw_target, raw_target)
+        target_band = int(float(self._vars["band"].get()))
+        first_band = int(float(self._vars.get("berry_first").get())) if self._vars.get("berry_first") else int(calculation.get("berry_first_band", 2))
+        last_band = int(float(self._vars.get("berry_last").get())) if self._vars.get("berry_last") else int(calculation.get("berry_last_band", 3))
+        if operation == "berry":
+            if target_mode == "single_band":
+                selected_bands = [target_band]
+                numeig = target_band + 1
+            elif target_mode == "composite_subspace":
+                if last_band <= first_band:
+                    raise ValueError("composite Berry requires Last band > First band")
+                selected_bands = list(range(first_band, last_band + 1))
+                numeig = last_band + 1
+            else:
+                raise ValueError("legacy non-contiguous Berry selection is read-only; copy it and choose a supported target")
+        else:
+            selected_bands = [int(value.strip()) for value in self._vars["composite"].get().split(",") if value.strip()]
+            numeig = int(float(self._vars["numeig"].get()))
+        raw_sampling = self._vars["berry_sampling"].get()
+        sampling_mode = BERRY_SAMPLING_VALUES.get(raw_sampling, raw_sampling)
+        calculation.update({"operation": operation, "qpoint": [float(self._vars["qx"].get()), float(self._vars["qy"].get())], "band_one_based": target_band, "composite_bands_one_based": selected_bands, "berry_target_mode": target_mode, "berry_first_band": first_band, "berry_last_band": last_band, "gmax": float(self._vars["gmax"].get()), "numeig": numeig, "polarization": self._vars["polarization"].get(), "grid_size": grid_size, "efs_grid_size": int(float(self._vars["efs_grid"].get())), "berry_step": float(self._vars["berry_step"].get()), "samples_per_segment": int(float(self._vars["samples"].get())), "sampling_mode": sampling_mode, "berry_record_path": self._vars["source_result"].get() or None, "response_weights": [float(value.strip()) for value in self._vars["response_weights"].get().split(",") if value.strip()] or None})
         return calculation
 
     def _sync(self) -> None:
@@ -842,7 +1052,9 @@ class StudioApp(tk.Tk):
         })
         self._selected_calculation_entry()["parameters"] = self._calculation_from_controls()
         self._selected_calculation_entry()["operation"] = self._selected_calculation_entry()["parameters"]["operation"]
-        self.project["plot"].update({"width_px": int(float(self._vars["width_px"].get())), "height_px": int(float(self._vars["height_px"].get())), "dpi": int(float(self._vars["dpi"].get())), "title": self._vars["title"].get(), "x_label": self._vars["x_label"].get(), "y_label": self._vars["y_label"].get(), "linewidth": float(self._vars["linewidth"].get()), "marker_size": float(self._vars["marker_size"].get()), "cmap": self._vars["cmap"].get(), "component_index": int(float(self._vars["component_index"].get())), "field_quantity": self._vars["field_quantity"].get(), "berry_coloring": bool(self._vars["berry_coloring"].get()), "berry_interpolation": bool(self._vars["berry_interpolation"].get()), "colorbar": bool(self._vars["colorbar"].get())})
+        raw_render = self._vars["berry_render_mode"].get()
+        render_mode = BERRY_RENDER_VALUES.get(raw_render, raw_render)
+        self.project["plot"].update({"width_px": int(float(self._vars["width_px"].get())), "height_px": int(float(self._vars["height_px"].get())), "dpi": int(float(self._vars["dpi"].get())), "title": self._vars["title"].get(), "x_label": self._vars["x_label"].get(), "y_label": self._vars["y_label"].get(), "linewidth": float(self._vars["linewidth"].get()), "marker_size": float(self._vars["marker_size"].get()), "cmap": self._vars["cmap"].get(), "component_index": int(float(self._vars["component_index"].get())), "field_quantity": self._vars["field_quantity"].get(), "berry_coloring": True, "berry_render_mode": render_mode, "show_sample_centers": bool(self._vars["show_sample_centers"].get()), "berry_interpolation": render_mode == "linear_interpolation", "colorbar": bool(self._vars["colorbar"].get())})
         for name in ("grid", "legend", "band_line", "band_markers"):
             if name in self._vars:
                 self.project["plot"][name] = self._vars[name].get() in {True, "True", "1"}
@@ -851,6 +1063,12 @@ class StudioApp(tk.Tk):
         for name in ("x_limits", "y_limits"):
             value = self._vars[name].get().strip()
             self.project["plot"][name] = [float(item.strip()) for item in value.split(",")] if value else None
+        for name in ("berry_vmin", "berry_vmax"):
+            value = self._vars[name].get().strip()
+            self.project["plot"][name] = float(value) if value else None
+        lower, upper = self.project["plot"].get("berry_vmin"), self.project["plot"].get("berry_vmax")
+        if lower is not None and upper is not None and lower >= upper:
+            raise ValueError("Berry vmin must be smaller than Berry vmax")
         self.dirty = True
         self._update_title()
 
@@ -942,12 +1160,21 @@ class StudioApp(tk.Tk):
                     points = data["points"]
                     axis.scatter(points[:, 0], points[:, 1], s=18)
                 elif data.get("epsilon") is not None:
-                    image = axis.imshow(data["epsilon"], origin="lower", aspect="equal", cmap="viridis")
+                    image = axis.pcolormesh(data["x_grid"], data["y_grid"], data["epsilon"], shading="nearest", cmap="viridis")
                     if view == "epsilon":
                         figure.colorbar(image, ax=axis, label="epsilon")
-                title = tab_name
+                    basis = np.asarray(data["direct_basis"])
+                    cell = np.asarray([[0, 0], basis[:, 0], basis[:, 0] + basis[:, 1], basis[:, 1], [0, 0]])
+                    axis.plot(cell[:, 0], cell[:, 1], color="black", linewidth=1.0)
+                    centers = [shape.get("center") for shape in data.get("motifs", []) if shape.get("center") is not None]
+                    if centers:
+                        centres_array = np.asarray(centers)
+                        axis.scatter(centres_array[:, 0], centres_array[:, 1], marker="+", color="black", s=35)
+                    axis.set_xlabel("x/a")
+                    axis.set_ylabel("y/a")
+                title = ""
                 if view == "reciprocal_bz":
-                    title += f" — max |AᵀB−2πI|={data['reciprocal_identity_residual']:.2e}"
+                    title = f"max |AᵀB−2πI|={data['reciprocal_identity_residual']:.2e}"
                 axis.set_title(title)
                 axis.set_aspect("equal", adjustable="box")
                 axis.set_box_aspect(1)
@@ -963,7 +1190,10 @@ class StudioApp(tk.Tk):
             self.preview_figure = self.geometry_canvases["Motif"].figure
             self.preview_canvas = self.geometry_canvases["Motif"]
             self.preview_toolbar = self.geometry_toolbars["Motif"]
-            self.preview_status.configure(text="Preview current; pending Run")
+            model = model_from_case(case)
+            fractional = np.asarray(model.effective_geometry.centers) @ np.linalg.inv(model.effective_lattice.direct_basis).T
+            on_boundary = np.any(np.isclose(fractional % 1.0, 0.0, atol=1e-10), axis=1)
+            self.preview_status.configure(text="Preview current; motif intersects a periodic boundary" if np.any(on_boundary) else "Preview current; pending Run")
         except Exception as exc:
             self.preview_status.configure(text=f"Preview unavailable: {exc}")
 
@@ -1192,6 +1422,10 @@ class StudioApp(tk.Tk):
             self.result_status.configure(text="Selected record is unavailable or has a mismatched identity")
             return
         self.figure = plot_record(project_dir / selected, self.project["plot"])
+        try:
+            self.side_result_status.configure(text=self._result_summary(project_dir / selected))
+        except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+            self.side_result_status.configure(text=f"Result metadata unavailable: {exc}")
         if self.plot_host is not None:
             self.plot_host.destroy()
         self.plot_host = ttk.Frame(self.result_side)
@@ -1206,6 +1440,29 @@ class StudioApp(tk.Tk):
         self.toolbar.pack(side="top", fill="x")
         if hasattr(self, "style_status"):
             self.style_status.configure(text="Style current")
+
+    @staticmethod
+    def _result_summary(record_path: Path) -> str:
+        summary = json.loads((record_path / "summary.json").read_text(encoding="utf-8"))
+        operation = summary.get("operation", "result")
+        if operation != "berry":
+            return f"{operation} · {summary.get('status', 'unknown')}\n{record_path}"
+        qualification = summary.get("qualification", {})
+        checks = qualification.get("per_plaquette", [])
+        qualified = sum(bool(item.get("qualified", False)) for item in checks)
+        total = int(summary.get("plaquette_count", qualification.get("plaquette_count", len(checks))))
+        with np.load(record_path / "arrays.npz", allow_pickle=False) as arrays:
+            values = np.asarray(arrays["curvature"], dtype=float)
+            plaquettes = np.asarray(arrays["plaquettes"], dtype=float)
+        centres = np.mean(plaquettes, axis=1)
+        invalid = [centres[index].tolist() for index, item in enumerate(checks) if not item.get("qualified", False)]
+        target = "single band" if int(summary.get("rank", 1)) == 1 else "composite subspace"
+        return (
+            f"Berry {target} {summary.get('bands_one_based', '?')} · {qualified}/{total} qualified\n"
+            f"{qualification.get('overall_status', qualification.get('status', 'unknown'))} · convergence {qualification.get('convergence_status', 'unknown')}\n"
+            f"range [{float(np.nanmin(values)):.6g}, {float(np.nanmax(values)):.6g}] · unqualified centres {invalid[:4]}\n"
+            f"{record_path}"
+        )
 
     def _apply_plot_style(self) -> None:
         try:

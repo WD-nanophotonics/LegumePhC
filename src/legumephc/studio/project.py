@@ -91,7 +91,10 @@ def new_project(name: str = "Untitled") -> dict[str, Any]:
                 "radius": 0.2,
                 "sides": 16,
                 "angle_degrees": 0.0,
-                "center": [0.0, 0.0],
+                # Cartesian centre of the triangular primitive cell. Motif
+                # centres are physical x/a,y/a coordinates, not fractional
+                # lattice coefficients.
+                "center": [0.5, 0.0],
                 "epsilon_background": 7.29,
                 "epsilon_inclusion": 1.0,
             },
@@ -103,9 +106,12 @@ def new_project(name: str = "Untitled") -> dict[str, Any]:
             "operation": "frequency_at_k",
             "qpoint": [0.2, 0.07],
             "band_one_based": 2,
-            "composite_bands_one_based": [2, 3],
+            "composite_bands_one_based": [2],
+            "berry_target_mode": "single_band",
+            "berry_first_band": 2,
+            "berry_last_band": 3,
             "gmax": 2,
-            "numeig": 4,
+            "numeig": 3,
             "polarization": "te",
             "path": "identity",
             "samples_per_segment": 16,
@@ -135,10 +141,12 @@ def new_project(name: str = "Untitled") -> dict[str, Any]:
             "band_style": "line",
             "band_line": True,
             "band_markers": False,
-            "berry_coloring": False,
+            "berry_coloring": True,
+            "berry_render_mode": "sample_cells",
+            "show_sample_centers": False,
             "linewidth": 1.5,
             "marker_size": 4.0,
-            "cmap": "viridis",
+            "cmap": "RdBu_r",
             "berry_interpolation": False,
             "berry_vmin": None,
             "berry_vmax": None,
@@ -189,6 +197,13 @@ def migrate_project(project: dict[str, Any]) -> dict[str, Any]:
         legacy = plot.get("band_style", "line")
         plot.setdefault("band_line", legacy != "scatter")
         plot.setdefault("band_markers", legacy in {"scatter", "cycle"})
+        # Berry values, rather than an uninformative point cloud, are the
+        # primary representation. Sampling centres are an independent overlay.
+        plot["berry_coloring"] = True
+        plot.setdefault("berry_render_mode", "sample_cells")
+        plot.setdefault("show_sample_centers", False)
+        for entry in project.get("calculations", []):
+            _migrate_berry_parameters(entry.get("parameters", {}))
         return _bind_compatibility_views(project)
     calculation = deepcopy(project["calculation"])
     results = []
@@ -208,7 +223,27 @@ def migrate_project(project: dict[str, Any]) -> dict[str, Any]:
     legacy = migrated["plot"].get("band_style", "line")
     migrated["plot"].setdefault("band_line", legacy != "scatter")
     migrated["plot"].setdefault("band_markers", legacy in {"scatter", "cycle"})
+    migrated["plot"]["berry_coloring"] = True
+    migrated["plot"].setdefault("berry_render_mode", "sample_cells")
+    migrated["plot"].setdefault("show_sample_centers", False)
+    _migrate_berry_parameters(migrated["calculations"][0]["parameters"])
     return _bind_compatibility_views(migrated)
+
+
+def _migrate_berry_parameters(calculation: dict[str, Any]) -> None:
+    """Attach explicit Berry-rank semantics without changing legacy bands."""
+
+    values = [int(value) for value in calculation.get("composite_bands_one_based", [])]
+    if not values:
+        values = [int(calculation.get("band_one_based", 2))]
+    calculation.setdefault("berry_first_band", min(values))
+    calculation.setdefault("berry_last_band", max(values))
+    if "berry_target_mode" not in calculation:
+        calculation["berry_target_mode"] = (
+            "single_band" if len(values) == 1 else
+            "composite_subspace" if values == list(range(min(values), max(values) + 1)) else
+            "legacy_noncontiguous"
+        )
 
 
 def _validate_calculation(calculation: dict[str, Any]) -> None:
@@ -227,6 +262,15 @@ def _validate_calculation(calculation: dict[str, Any]) -> None:
         _require(int(calculation.get("efs_grid_size", 0)) >= 2, "EFS grid size must be at least 2")
     if operation == "berry":
         _require(float(calculation.get("berry_step", 0)) > 0, "berry_step must be positive")
+        _migrate_berry_parameters(calculation)
+        target_mode = calculation.get("berry_target_mode")
+        _require(target_mode in {"single_band", "composite_subspace", "legacy_noncontiguous"}, "unsupported Berry target mode")
+        if target_mode == "single_band":
+            _require(int(calculation.get("band_one_based", 0)) >= 1, "Berry target band must be one-based")
+        elif target_mode == "composite_subspace":
+            first = int(calculation.get("berry_first_band", 0))
+            last = int(calculation.get("berry_last_band", 0))
+            _require(first >= 1 and last > first, "composite Berry requires an increasing contiguous band range")
         mode = calculation.get("sampling_mode", "single_plaquette")
         _require(mode in {"single_plaquette", "first_bz_grid", "explicit_centers"}, "unsupported Berry sampling mode")
         if mode == "first_bz_grid":

@@ -113,10 +113,24 @@ def validate_request(request: dict[str, Any]) -> dict[str, Any]:
 
 
 def _selected_bands(calculation: dict[str, Any]) -> tuple[tuple[int, ...], int]:
-    bands = zero_based_bands(calculation["composite_bands_one_based"])
+    if calculation.get("operation") == "berry":
+        mode = calculation.get("berry_target_mode", "single_band")
+        if mode == "single_band":
+            one_based = [int(calculation["band_one_based"])]
+        elif mode == "composite_subspace":
+            first = int(calculation["berry_first_band"])
+            last = int(calculation["berry_last_band"])
+            one_based = list(range(first, last + 1))
+        else:
+            one_based = list(calculation["composite_bands_one_based"])
+        bands = zero_based_bands(one_based)
+        numeig = max(one_based) + 1
+    else:
+        bands = zero_based_bands(calculation["composite_bands_one_based"])
+        numeig = int(calculation["numeig"])
     target = zero_based_band(calculation["band_one_based"])
-    numeig = int(calculation["numeig"])
-    if max((*bands, target), default=0) >= numeig:
+    required = bands if calculation.get("operation") == "berry" else (*bands, target)
+    if max(required, default=0) >= numeig:
         raise ValueError("configured one-based band exceeds numeig")
     return bands, numeig
 
@@ -184,7 +198,17 @@ def execute_request(request: dict[str, Any], *, progress=None) -> dict[str, Any]
             plaquettes = _plaquette(calculation)
         result = solve_berry(model, plaquettes, gmax=gmax, bands=bands, rank=len(bands), numeig=numeig, pol=pol, convergence_status=calculation.get("convergence_status", "NOT_ASSESSED"), progress=progress)
         arrays = {key: value for key, value in result.items() if isinstance(value, np.ndarray)}
-        summary.update({"qualification": result["qualification"], "raw_unsymmetrized": True, "polarization": pol})
+        summary.update({
+            "qualification": result["qualification"],
+            "raw_unsymmetrized": True,
+            "polarization": pol,
+            "berry_target_mode": calculation.get("berry_target_mode", "single_band"),
+            "bands_one_based": [band + 1 for band in bands],
+            "rank": len(bands),
+            "actual_numeig": numeig,
+            "sampling_domain": sampling_mode,
+            "plaquette_count": len(plaquettes),
+        })
     elif operation == "berry_curvature_dipole":
         selected = source["reference"]["path"]
         qpoints = source["centers"]

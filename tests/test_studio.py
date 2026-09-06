@@ -113,12 +113,20 @@ def test_plot_berry_uses_multi_plaquette_centers_and_status(tmp_path):
         [[0.0, 0.0], [0.0, 0.1], [0.1, 0.1], [0.1, 0.0]],
         [[0.2, 0.0], [0.2, 0.1], [0.3, 0.1], [0.3, 0.0]],
     ])
-    record = create_record(tmp_path / "results", identity={"model": "Model2D", "geometry": "x", "affine": {}, "basis": {}, "solver": "test", "operation": "berry"}, config={}, summary={"status": "succeeded", "operation": "berry", "qualification": {"overall_status": "UNQUALIFIED_CONVERGENCE_NOT_ASSESSED"}}, arrays={"qpoints": plaquettes.reshape(-1, 2), "plaquettes": plaquettes, "curvature": np.asarray([1.0, -2.0])})
-    figure = plot_record(record, {"berry_coloring": True})
+    record = create_record(tmp_path / "results", identity={"model": "Model2D", "geometry": "x", "affine": {}, "basis": {}, "solver": "test", "operation": "berry"}, config={}, summary={"status": "succeeded", "operation": "berry", "qualification": {"overall_status": "UNQUALIFIED_CONVERGENCE_NOT_ASSESSED", "per_plaquette": [{"qualified": True}, {"qualified": False}]}}, arrays={"qpoints": plaquettes.reshape(-1, 2), "plaquettes": plaquettes, "curvature": np.asarray([1.0, -2.0])})
+    figure = plot_record(record)
     axis = figure.axes[0]
-    offsets = axis.collections[0].get_offsets()
-    assert offsets.shape == (2, 2)
+    cells = axis.collections[0]
+    assert len(cells.get_paths()) == 2
+    assert np.allclose(cells.get_array(), [1.0, -2.0])
+    assert len(figure.axes) == 2
+    assert any(collection.get_label() == "unqualified" for collection in axis.collections)
     assert figure.texts == []  # qualification belongs in Studio metadata, not the exported science figure
+    limited = plot_record(record, {"berry_vmin": -1.0, "berry_vmax": 1.0})
+    assert limited.axes[0].collections[0].norm.vmin == -1.0
+    assert limited.axes[0].collections[0].norm.vmax == 1.0
+    with pytest.raises(ValueError, match="minimum"):
+        plot_record(record, {"berry_vmin": 1.0, "berry_vmax": -1.0})
 
 
 def test_plot_efs_reconstructs_grid_contour_and_labels_sparse(tmp_path):

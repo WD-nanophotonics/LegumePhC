@@ -67,6 +67,46 @@ def test_operation_specific_grids_do_not_cross_validate():
     validate_project(project)
 
 
+def test_berry_target_mode_derives_contiguous_bands_and_eigenmode_margin():
+    from legumephc.studio.worker import _selected_bands
+
+    calculation = deepcopy(new_project()["calculations"][0]["parameters"])
+    calculation["operation"] = "berry"
+    calculation.update({"berry_target_mode": "single_band", "band_one_based": 2})
+    assert _selected_bands(calculation) == ((1,), 3)
+    calculation.update({"berry_target_mode": "composite_subspace", "berry_first_band": 2, "berry_last_band": 3})
+    assert _selected_bands(calculation) == ((1, 2), 4)
+
+
+def test_legacy_berry_targets_and_plot_defaults_migrate_explicitly():
+    project = new_project("legacy")
+    calculation = project["calculations"][0]["parameters"]
+    calculation.pop("berry_target_mode")
+    calculation.pop("berry_first_band")
+    calculation.pop("berry_last_band")
+    calculation["composite_bands_one_based"] = [2, 3]
+    project["plot"].update({"berry_coloring": False})
+    migrated = migrate_project(project)
+    assert migrated["calculations"][0]["parameters"]["berry_target_mode"] == "composite_subspace"
+    assert migrated["plot"]["berry_coloring"] is True
+    assert migrated["plot"]["berry_render_mode"] == "sample_cells"
+
+
+def test_epsilon_preview_retains_cartesian_equilateral_triangle():
+    project = new_project("triangle")
+    project["model"]["geometry"].update({
+        "kind": "polygon", "radius": 0.25, "sides": 3, "center": [0.5, 0.0],
+        "motifs": [{"name": "Triangle", "kind": "polygon", "radius": 0.25, "sides": 3, "center": [0.5, 0.0], "epsilon": 1.0, "angle_degrees": 0.0}],
+    })
+    preview = preview_geometry(project["model"], view="epsilon", size=48)
+    basis = np.asarray(preview["direct_basis"])
+    assert np.allclose([preview["x_grid"][0, 0], preview["y_grid"][0, 0]], [0.0, 0.0])
+    assert np.allclose([preview["x_grid"][-1, -1], preview["y_grid"][-1, -1]], basis[:, 0] + basis[:, 1])
+    vertices = preview["motifs"][0]["vertices"]
+    lengths = np.linalg.norm(vertices - np.roll(vertices, -1, axis=0), axis=1)
+    assert np.max(lengths) - np.min(lengths) < 1e-12
+
+
 def test_historical_result_snapshot_survives_calculation_operation_change():
     project = new_project("history")
     calculation = project["calculations"][0]

@@ -15,26 +15,35 @@ def _polygon_mask(points: np.ndarray, vertices: np.ndarray) -> np.ndarray:
     return np.all(cross >= -1e-12, axis=1)
 
 
+def _motif_component_mask(points: np.ndarray, spec, basis: np.ndarray, index: int) -> np.ndarray:
+    """Use the same Cartesian motif geometry for masks and vector previews."""
+
+    result = np.zeros(len(points), dtype=bool)
+    center = spec.centers[index]
+    for n1 in range(-2, 3):
+        for n2 in range(-2, 3):
+            shift = np.asarray(basis) @ np.array([n1, n2], dtype=float)
+            local = points - center - shift
+            if spec.motif_kinds[index] == "circle":
+                ellipse = spec.ellipse_parameters[index] if spec.ellipse_parameters else None
+                if ellipse is None:
+                    result |= np.sum(local * local, axis=1) <= spec.radii[index] ** 2
+                else:
+                    rx, ry, phi = ellipse
+                    x1 = local[:, 0] * np.cos(phi) + local[:, 1] * np.sin(phi)
+                    y1 = -local[:, 0] * np.sin(phi) + local[:, 1] * np.cos(phi)
+                    result |= (x1 / rx) ** 2 + (y1 / ry) ** 2 <= 1.0
+            else:
+                assert spec.sides is not None
+                vertices = spec.transformed_vertices[index] if spec.transformed_vertices is not None and spec.transformed_vertices[index] is not None else polygon_vertices(spec.radii[index], spec.sides[index], spec.angles_degrees[index], center)
+                result |= _polygon_mask(points - shift, vertices)
+    return result
+
+
 def _motif_mask(points: np.ndarray, spec, basis: np.ndarray) -> np.ndarray:
     result = np.zeros(len(points), dtype=bool)
-    for index, center in enumerate(spec.centers):
-        for n1 in range(-2, 3):
-            for n2 in range(-2, 3):
-                shift = np.asarray(basis) @ np.array([n1, n2], dtype=float)
-                local = points - center - shift
-                if spec.motif_kinds[index] == "circle":
-                    ellipse = spec.ellipse_parameters[index] if spec.ellipse_parameters else None
-                    if ellipse is None:
-                        result |= np.sum(local * local, axis=1) <= spec.radii[index] ** 2
-                    else:
-                        rx, ry, phi = ellipse
-                        x1 = local[:, 0] * np.cos(phi) + local[:, 1] * np.sin(phi)
-                        y1 = -local[:, 0] * np.sin(phi) + local[:, 1] * np.cos(phi)
-                        result |= (x1 / rx) ** 2 + (y1 / ry) ** 2 <= 1.0
-                else:
-                    assert spec.sides is not None
-                    vertices = spec.transformed_vertices[index] if spec.transformed_vertices is not None and spec.transformed_vertices[index] is not None else polygon_vertices(spec.radii[index], spec.sides[index], spec.angles_degrees[index], center)
-                    result |= _polygon_mask(points - shift, vertices)
+    for index in range(len(spec.centers)):
+        result |= _motif_component_mask(points, spec, basis, index)
     return result
 
 
@@ -51,7 +60,7 @@ def _motif_render_specs(spec) -> list[dict[str, Any]]:
                 shapes.append({"kind": "ellipse", "center": np.asarray(center).copy(), "width": float(2 * rx), "height": float(2 * ry), "angle_degrees": float(np.degrees(phi))})
         else:
             vertices = spec.transformed_vertices[index] if spec.transformed_vertices is not None and spec.transformed_vertices[index] is not None else polygon_vertices(spec.radii[index], spec.sides[index], spec.angles_degrees[index], center)
-            shapes.append({"kind": "polygon", "vertices": np.asarray(vertices).copy()})
+            shapes.append({"kind": "polygon", "center": np.asarray(center).copy(), "vertices": np.asarray(vertices).copy()})
     return shapes
 
 
@@ -80,24 +89,14 @@ def preview_geometry(case: dict[str, Any], *, view: str = "unit_cell", size: int
     mask = _motif_mask(points, spec, lattice.direct_basis).reshape(size, size)
     epsilon_flat = np.full(len(points), spec.epsilon_background, dtype=float)
     for index in range(len(spec.radii)):
-        motif_case = np.zeros(len(points), dtype=bool)
-        for n1 in range(-2, 3):
-            for n2 in range(-2, 3):
-                shift = np.asarray(lattice.direct_basis) @ np.array([n1, n2], dtype=float)
-                # Reuse the single-motif helper by constructing the same local
-                # mask explicitly; this keeps preview independent of Legume.
-                center = spec.centers[index]
-                local = points - center - shift
-                if spec.motif_kinds[index] == "circle":
-                    motif_case |= np.sum(local * local, axis=1) <= spec.radii[index] ** 2
-                else:
-                    vertices = spec.transformed_vertices[index] if spec.transformed_vertices is not None and spec.transformed_vertices[index] is not None else polygon_vertices(spec.radii[index], spec.sides[index], spec.angles_degrees[index], center)
-                    motif_case |= _polygon_mask(points - shift, vertices)
+        motif_case = _motif_component_mask(points, spec, lattice.direct_basis, index)
         epsilon_flat[motif_case] = spec.motif_epsilons[index]
     epsilon = epsilon_flat.reshape(size, size)
     return {
         "view": view,
         "points": points.reshape(size, size, 2),
+        "x_grid": points.reshape(size, size, 2)[:, :, 0],
+        "y_grid": points.reshape(size, size, 2)[:, :, 1],
         "epsilon": epsilon.reshape(size, size),
         "motif_mask": mask,
         "shape": (int(size), int(size)),

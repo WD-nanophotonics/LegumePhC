@@ -5,11 +5,28 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from matplotlib.collections import PolyCollection
+from matplotlib.colors import Normalize
 from matplotlib.figure import Figure
+
+from ..geometry import first_bz_vertices
+from .profile import model_from_case
 
 
 def default_plot_style() -> dict[str, Any]:
-    return {"width_px": 900, "height_px": 600, "dpi": 100, "title": "", "x_label": "", "y_label": "", "grid": True, "legend": True, "x_limits": None, "y_limits": None, "band_style": "line", "band_line": True, "band_markers": False, "linewidth": 1.5, "marker_size": 4.0, "cmap": "viridis", "berry_coloring": False, "berry_interpolation": False, "berry_vmin": None, "berry_vmax": None, "colorbar": True, "component_index": 0, "field_quantity": "energy_density", "font_size": 10.0}
+    return {"width_px": 900, "height_px": 600, "dpi": 100, "title": "", "x_label": "", "y_label": "", "grid": True, "legend": True, "x_limits": None, "y_limits": None, "band_style": "line", "band_line": True, "band_markers": False, "linewidth": 1.5, "marker_size": 4.0, "cmap": "RdBu_r", "berry_coloring": True, "berry_render_mode": "sample_cells", "show_sample_centers": False, "berry_interpolation": False, "berry_vmin": None, "berry_vmax": None, "colorbar": True, "component_index": 0, "field_quantity": "energy_density", "font_size": 10.0}
+
+
+def _berry_norm(values: np.ndarray, options: dict[str, Any]) -> Normalize:
+    finite = np.asarray(values, dtype=float)[np.isfinite(values)]
+    extent = max(float(np.max(np.abs(finite))) if finite.size else 0.0, 1e-15)
+    vmin = options.get("berry_vmin")
+    vmax = options.get("berry_vmax")
+    vmin = -extent if vmin is None else float(vmin)
+    vmax = extent if vmax is None else float(vmax)
+    if not np.isfinite([vmin, vmax]).all() or vmin >= vmax:
+        raise ValueError("Berry color minimum must be smaller than maximum")
+    return Normalize(vmin=vmin, vmax=vmax)
 
 
 def _path_label(value: Any) -> str:
@@ -114,15 +131,34 @@ def plot_record(record_path: str | Path, style: dict[str, Any] | None = None) ->
         plaquettes = np.asarray(arrays["plaquettes"]) if "plaquettes" in arrays else None
         points = np.mean(plaquettes, axis=1) if plaquettes is not None else np.asarray(arrays["qpoints"])
         values = np.asarray(arrays.get("curvature", np.zeros(len(points)))).reshape(-1)
-        if options["berry_coloring"] and len(values) == len(points):
-            if options.get("berry_interpolation") and len(points) >= 3:
-                artist = axis.tricontourf(points[:, 0], points[:, 1], values, levels=12, cmap=options.get("cmap", "viridis"), vmin=options.get("berry_vmin"), vmax=options.get("berry_vmax"))
+        if len(values) == len(points):
+            norm = _berry_norm(values, options)
+            render_mode = options.get("berry_render_mode", "sample_cells")
+            if (render_mode == "linear_interpolation" or options.get("berry_interpolation")) and len(points) >= 3:
+                artist = axis.tricontourf(points[:, 0], points[:, 1], values, levels=24, cmap=options.get("cmap", "RdBu_r"), norm=norm)
+            elif plaquettes is not None:
+                artist = PolyCollection(plaquettes, array=values, cmap=options.get("cmap", "RdBu_r"), norm=norm, edgecolors="none")
+                axis.add_collection(artist)
+                axis.autoscale_view()
             else:
-                artist = axis.scatter(points[:, 0], points[:, 1], c=values, cmap=options.get("cmap", "viridis"), vmin=options.get("berry_vmin"), vmax=options.get("berry_vmax"), label="plaquette curvature")
+                artist = axis.scatter(points[:, 0], points[:, 1], c=values, cmap=options.get("cmap", "RdBu_r"), norm=norm)
             if options.get("colorbar", True):
                 figure.colorbar(artist, ax=axis, label="Berry curvature")
+            per_plaquette = summary.get("qualification", {}).get("per_plaquette", [])
+            invalid = np.asarray([not bool(item.get("qualified", False)) for item in per_plaquette], dtype=bool)
+            if len(invalid) == len(points) and np.any(invalid):
+                axis.scatter(points[invalid, 0], points[invalid, 1], marker="x", s=45, linewidths=1.5, color="black", label="unqualified")
+            if options.get("show_sample_centers", False):
+                axis.scatter(points[:, 0], points[:, 1], s=8, facecolors="none", edgecolors="black", linewidths=0.5, label="sample centres")
+            try:
+                model = model_from_case(config.get("config", {}).get("case", config.get("case", {})))
+                bz = first_bz_vertices(model.effective_lattice)
+                closed = np.vstack((bz, bz[0]))
+                axis.plot(closed[:, 0], closed[:, 1], color="black", linewidth=1.0, label="first BZ")
+            except (KeyError, TypeError, ValueError):
+                pass
         else:
-            axis.scatter(points[:, 0], points[:, 1], label="plaquette centers")
+            raise ValueError("Berry record has mismatched plaquette centres and curvature values")
         axis.set_aspect("equal", adjustable="box")
         axis.set_xlabel(options["x_label"] or "qₓ")
         axis.set_ylabel(options["y_label"] or "qᵧ")
