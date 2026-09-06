@@ -142,3 +142,28 @@ def test_ui_motif_seven_column_parse_and_visibility_is_scoped():
     StudioApp._operation_changed(app)
     assert geometry_widget.removed is False and calculation_widget.removed is False
     assert app.berry_sampling_widget.removed is True and app.berry_sampling_label.removed is True
+
+
+def test_calculation_grids_are_independent_from_plot_grid_boolean():
+    from legumephc.studio.ui import StudioApp
+
+    parameters = deepcopy(new_project()["calculations"][0]["parameters"])
+
+    def controls(operation: str):
+        values = {
+            "operation": operation, "qx": "0.2", "qy": "0.07", "band": "2",
+            "composite": "2,3", "gmax": "2", "numeig": "4", "polarization": "te",
+            "field_grid": "6", "efs_grid": "7", "berry_grid": "8", "berry_step": "0.02",
+            "samples": "16", "berry_sampling": "first_bz_grid", "source_result": "",
+            "response_weights": "", "grid": True,
+        }
+        return {key: SimpleNamespace(get=lambda value=value: value) for key, value in values.items()}
+
+    app = SimpleNamespace(_selected_calculation_entry=lambda: {"parameters": parameters})
+    app._vars = controls("fields_energy")
+    assert StudioApp._calculation_from_controls(app)["grid_size"] == 6
+    app._vars = controls("berry")
+    assert StudioApp._calculation_from_controls(app)["grid_size"] == 8
+    app._vars = controls("efs")
+    calculation = StudioApp._calculation_from_controls(app)
+    assert calculation["efs_grid_size"] == 7

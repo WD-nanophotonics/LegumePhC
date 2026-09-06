@@ -194,7 +194,7 @@ class StudioApp(tk.Tk):
         self.plot_host = None
         self._vars: dict[str, tk.Variable] = {}
         self._field_widgets: dict[str, list[tk.Widget]] = {}
-        self._calculation_field_names = {"qx", "qy", "band", "composite", "gmax", "numeig", "grid", "efs_grid", "berry_step", "samples", "berry_grid", "source_result", "response_weights"}
+        self._calculation_field_names = {"qx", "qy", "band", "composite", "gmax", "numeig", "field_grid", "efs_grid", "berry_step", "samples", "berry_grid", "source_result", "response_weights"}
         self._style_widgets: dict[str, list[tk.Widget]] = {}
         self._build()
         for name in ("width_px", "height_px", "dpi", "title", "x_label", "y_label", "x_limits", "y_limits", "linewidth", "marker_size", "cmap", "component_index", "field_quantity", "grid", "legend", "band_line", "band_markers", "berry_coloring", "berry_interpolation", "colorbar", "berry_vmin", "berry_vmax"):
@@ -414,7 +414,7 @@ class StudioApp(tk.Tk):
         self.operation_menu = ttk.Combobox(controls, textvariable=self._var("operation"), values=("frequency_at_k", "band_structure", "fields_energy", "efs", "berry", "berry_curvature_dipole"), state="readonly", width=24)
         self.operation_menu.grid(row=0, column=1, padx=4, pady=2)
         self.operation_menu.bind("<<ComboboxSelected>>", lambda _event: self._operation_changed())
-        for row, label, name in ((1, "q x", "qx"), (2, "q y", "qy"), (3, "Band (one-based)", "band"), (4, "Composite bands (one-based)", "composite"), (5, "gmax", "gmax"), (6, "numeig", "numeig"), (7, "Grid size", "grid"), (8, "EFS grid", "efs_grid"), (9, "Berry step", "berry_step")):
+        for row, label, name in ((1, "q x", "qx"), (2, "q y", "qy"), (3, "Band (one-based)", "band"), (4, "Composite bands (one-based)", "composite"), (5, "gmax", "gmax"), (6, "numeig", "numeig"), (7, "Field grid size", "field_grid"), (8, "EFS grid size", "efs_grid"), (9, "Berry step", "berry_step")):
             self._label_entry(controls, row, label, name, 24 if name == "composite" else 12)
         ttk.Label(controls, text="Polarization").grid(row=10, column=0, sticky="w", padx=4, pady=2)
         self.polarization_widget = ttk.Combobox(controls, textvariable=self._var("polarization"), values=("te", "tm"), state="readonly", width=12)
@@ -454,7 +454,7 @@ class StudioApp(tk.Tk):
         visible.update({
             "frequency_at_k": {"qx", "qy", "band"},
             "band_structure": {"samples"},
-            "fields_energy": {"qx", "qy", "composite", "grid"},
+            "fields_energy": {"qx", "qy", "composite", "field_grid"},
             "efs": {"composite", "efs_grid"},
             "berry": {"composite", "berry_step", "berry_grid", "berry_sampling"},
             "berry_curvature_dipole": set(),
@@ -566,7 +566,7 @@ class StudioApp(tk.Tk):
         }
         selected_id = self.project.get("selected_node", {}).get("id")
         calculation = next((item["parameters"] for item in self.project.get("calculations", []) if item["id"] == selected_id), self.project["calculation"])
-        values.update({"operation": calculation["operation"], "qx": calculation["qpoint"][0], "qy": calculation["qpoint"][1], "band": calculation["band_one_based"], "composite": ",".join(map(str, calculation["composite_bands_one_based"])), "gmax": calculation["gmax"], "numeig": calculation["numeig"], "polarization": calculation["polarization"], "grid": calculation["grid_size"], "efs_grid": calculation["efs_grid_size"], "berry_step": calculation["berry_step"], "samples": calculation.get("samples_per_segment", 16), "berry_sampling": calculation.get("sampling_mode", "single_plaquette"), "berry_grid": calculation.get("grid_size", 3), "source_result": calculation.get("berry_record_path", ""), "response_weights": ",".join(map(str, calculation.get("response_weights") or []))})
+        values.update({"operation": calculation["operation"], "qx": calculation["qpoint"][0], "qy": calculation["qpoint"][1], "band": calculation["band_one_based"], "composite": ",".join(map(str, calculation["composite_bands_one_based"])), "gmax": calculation["gmax"], "numeig": calculation["numeig"], "polarization": calculation["polarization"], "field_grid": calculation["grid_size"], "efs_grid": calculation["efs_grid_size"], "berry_step": calculation["berry_step"], "samples": calculation.get("samples_per_segment", 16), "berry_sampling": calculation.get("sampling_mode", "single_plaquette"), "berry_grid": calculation.get("grid_size", 3), "source_result": calculation.get("berry_record_path", ""), "response_weights": ",".join(map(str, calculation.get("response_weights") or []))})
         values.update(self.project["plot"])
         for name in ("x_limits", "y_limits"):
             values[name] = _control_text(values.get(name))
@@ -631,7 +631,7 @@ class StudioApp(tk.Tk):
         entry = self._selected_calculation_entry()
         calculation = entry["parameters"]
         self._loading = True
-        values = {"operation": calculation.get("operation", entry.get("operation", "frequency_at_k")), "qx": calculation.get("qpoint", [0.2, 0.07])[0], "qy": calculation.get("qpoint", [0.2, 0.07])[1], "band": calculation.get("band_one_based", 2), "composite": ",".join(map(str, calculation.get("composite_bands_one_based", [2, 3]))), "gmax": calculation.get("gmax", 2), "numeig": calculation.get("numeig", 4), "polarization": calculation.get("polarization", "te"), "grid": calculation.get("grid_size", 8), "efs_grid": calculation.get("efs_grid_size", 5), "berry_step": calculation.get("berry_step", 0.02), "samples": calculation.get("samples_per_segment", 16), "berry_sampling": calculation.get("sampling_mode", "single_plaquette"), "berry_grid": calculation.get("grid_size", 3)}
+        values = {"operation": calculation.get("operation", entry.get("operation", "frequency_at_k")), "qx": calculation.get("qpoint", [0.2, 0.07])[0], "qy": calculation.get("qpoint", [0.2, 0.07])[1], "band": calculation.get("band_one_based", 2), "composite": ",".join(map(str, calculation.get("composite_bands_one_based", [2, 3]))), "gmax": calculation.get("gmax", 2), "numeig": calculation.get("numeig", 4), "polarization": calculation.get("polarization", "te"), "field_grid": calculation.get("grid_size", 8), "efs_grid": calculation.get("efs_grid_size", 5), "berry_step": calculation.get("berry_step", 0.02), "samples": calculation.get("samples_per_segment", 16), "berry_sampling": calculation.get("sampling_mode", "single_plaquette"), "berry_grid": calculation.get("grid_size", 3)}
         for name, value in values.items():
             if name in self._vars:
                 self._vars[name].set(value)
@@ -825,7 +825,13 @@ class StudioApp(tk.Tk):
 
     def _calculation_from_controls(self) -> dict[str, Any]:
         calculation = dict(self._selected_calculation_entry()["parameters"])
-        calculation.update({"operation": self._vars["operation"].get(), "qpoint": [float(self._vars["qx"].get()), float(self._vars["qy"].get())], "band_one_based": int(float(self._vars["band"].get())), "composite_bands_one_based": [int(value.strip()) for value in self._vars["composite"].get().split(",") if value.strip()], "gmax": float(self._vars["gmax"].get()), "numeig": int(float(self._vars["numeig"].get())), "polarization": self._vars["polarization"].get(), "grid_size": int(float(self._vars["grid"].get())), "efs_grid_size": int(float(self._vars["efs_grid"].get())), "berry_step": float(self._vars["berry_step"].get()), "samples_per_segment": int(float(self._vars["samples"].get())), "sampling_mode": self._vars["berry_sampling"].get(), "berry_record_path": self._vars["source_result"].get() or None, "response_weights": [float(value.strip()) for value in self._vars["response_weights"].get().split(",") if value.strip()] or None})
+        operation = self._vars["operation"].get()
+        grid_size = calculation.get("grid_size", 8)
+        if operation == "fields_energy":
+            grid_size = int(float(self._vars["field_grid"].get()))
+        elif operation == "berry":
+            grid_size = int(float(self._vars["berry_grid"].get()))
+        calculation.update({"operation": operation, "qpoint": [float(self._vars["qx"].get()), float(self._vars["qy"].get())], "band_one_based": int(float(self._vars["band"].get())), "composite_bands_one_based": [int(value.strip()) for value in self._vars["composite"].get().split(",") if value.strip()], "gmax": float(self._vars["gmax"].get()), "numeig": int(float(self._vars["numeig"].get())), "polarization": self._vars["polarization"].get(), "grid_size": grid_size, "efs_grid_size": int(float(self._vars["efs_grid"].get())), "berry_step": float(self._vars["berry_step"].get()), "samples_per_segment": int(float(self._vars["samples"].get())), "sampling_mode": self._vars["berry_sampling"].get(), "berry_record_path": self._vars["source_result"].get() or None, "response_weights": [float(value.strip()) for value in self._vars["response_weights"].get().split(",") if value.strip()] or None})
         return calculation
 
     def _sync(self) -> None:
