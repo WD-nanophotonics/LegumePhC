@@ -57,6 +57,14 @@ class Model2D:
         return {
             "model": "Model2D",
             "geometry": self.geometry.name,
+            "motifs": {
+                "kinds": list(self.geometry.motif_kinds),
+                "radii": list(self.geometry.radii),
+                "centers": np.asarray(self.geometry.centers).tolist(),
+                "angles_degrees": list(self.geometry.angles_degrees),
+                "sides": None if self.geometry.sides is None else list(self.geometry.sides),
+                "epsilons": list(self.geometry.motif_epsilons),
+            },
             "affine": {"linear": self.affine.linear.tolist(), "translation": self.affine.translation.tolist()},
             "basis": {
                 "policy": self.basis_policy,
@@ -83,13 +91,14 @@ class Model2D:
         if np.allclose(self.affine.linear, np.eye(2)) and np.allclose(self.affine.translation, 0.0):
             return self.geometry
         ellipse_parameters: list[tuple[float, float, float] | None] = []
-        transformed_vertices: list[np.ndarray] = []
+        transformed_vertices: list[np.ndarray | None] = []
         singular_vectors, singular_values, _ = np.linalg.svd(self.affine.linear)
         phi = float(np.arctan2(singular_vectors[1, 0], singular_vectors[0, 0]))
         for index, center in enumerate(self.geometry.centers):
-            if self.geometry.kind == "circle":
+            if self.geometry.motif_kinds[index] == "circle":
                 radius = self.geometry.radii[index]
                 ellipse_parameters.append((float(radius * singular_values[0]), float(radius * singular_values[1]), phi))
+                transformed_vertices.append(None)
             else:
                 assert self.geometry.sides is not None
                 source = polygon_vertices(self.geometry.radii[index], self.geometry.sides[index], self.geometry.angles_degrees[index], center)
@@ -104,10 +113,12 @@ class Model2D:
             strict_c3=False,
             epsilon_background=self.geometry.epsilon_background,
             epsilon_inclusion=self.geometry.epsilon_inclusion,
+            motif_kinds=self.geometry.motif_kinds,
+            motif_epsilons=self.geometry.motif_epsilons,
             direct_basis=self.effective_lattice.direct_basis,
             centers=self.affine.apply(self.geometry.centers),
             ellipse_parameters=tuple(ellipse_parameters),
-            transformed_vertices=None if self.geometry.kind == "circle" else tuple(transformed_vertices),
+            transformed_vertices=tuple(transformed_vertices) if transformed_vertices else None,
         )
 
     @property

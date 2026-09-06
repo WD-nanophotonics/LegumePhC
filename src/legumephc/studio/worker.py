@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 from typing import Any
+from copy import deepcopy
 
 import numpy as np
 
@@ -27,8 +28,14 @@ def build_worker_request(project: dict[str, Any], project_path: str | Path) -> d
     if not project_file.is_file():
         raise ValueError("save the project before running a calculation")
     project_dir = project_file.parent
-    calculation = project["calculation"]
-    request = {"schema": REQUEST_SCHEMA, "project_dir": str(project_dir), "records_dir": str(project_records_dir(project_file)), "records": project.get("records", []), "selected_result": project.get("selected_result"), "case": project["case"], "calculation": calculation}
+    if project.get("schema", "").endswith("-v2"):
+        selected_id = project.get("selected_node", {}).get("id")
+        calculation_entry = next((item for item in project["calculations"] if item["id"] == selected_id), project["calculations"][0])
+        calculation = calculation_entry["parameters"]
+        request = {"schema": REQUEST_SCHEMA, "project_dir": str(project_dir), "records_dir": str(project_records_dir(project_file)), "records": [item["record_reference"] for item in project.get("results", [])], "selected_result": project.get("selected_result"), "case": project["model"], "calculation": calculation, "calculation_id": calculation_entry["id"], "model_snapshot": deepcopy(project["model"]), "calculation_snapshot": deepcopy(calculation)}
+    else:
+        calculation = project["calculation"]
+        request = {"schema": REQUEST_SCHEMA, "project_dir": str(project_dir), "records_dir": str(project_records_dir(project_file)), "records": project.get("records", []), "selected_result": project.get("selected_result"), "case": project["case"], "calculation": calculation}
     validate_request(request)
     return request
 
@@ -147,7 +154,7 @@ def execute_request(request: dict[str, Any]) -> dict[str, Any]:
         arrays = {"qpoint": qpoint.reshape(1, 2), "frequency": np.asarray([value])}
         summary.update({"frequency": value, "band_one_based": calculation["band_one_based"], "polarization": pol})
     elif operation == "band_structure":
-        result = solve_bands(model, path=calculation.get("path", "identity"), gmax=gmax, numeig=numeig, pol=pol)
+        result = solve_bands(model, path=calculation.get("path", "identity"), gmax=gmax, numeig=numeig, pol=pol, samples_per_segment=int(calculation.get("samples_per_segment", 16)))
         arrays = {key: value for key, value in result.items() if isinstance(value, np.ndarray)}
         summary.update({"path_labels": result["path_labels"], "qpoint_count": len(result["qpoints"]), "polarization": pol})
     elif operation == "fields_energy":
@@ -161,7 +168,18 @@ def execute_request(request: dict[str, Any]) -> dict[str, Any]:
         arrays = {key: value for key, value in result.items() if isinstance(value, np.ndarray)}
         summary.update({"bands_zero_based": bands, "sampling_domain": result["sampling_domain"], "grid_shape": result["grid_shape"], "sample_count": len(result["qpoints"]), "polarization": pol})
     elif operation == "berry":
-        result = solve_berry(model, _plaquette(calculation), gmax=gmax, bands=bands, rank=len(bands), numeig=numeig, pol=pol)
+        sampling_mode = calculation.get("sampling_mode", "single_plaquette")
+        if sampling_mode == "first_bz_grid":
+            from ..berry import first_bz_plaquettes
+            plaquettes = first_bz_plaquettes(model.effective_lattice, grid_size=int(calculation.get("grid_size", 3)), step=float(calculation["berry_step"]))
+        elif sampling_mode == "explicit_centers":
+            centers = np.asarray(calculation.get("centers", []), dtype=float)
+            step = float(calculation["berry_step"])
+            offsets = np.asarray([[-step, -step], [-step, step], [step, step], [step, -step]])
+            plaquettes = centers[:, None, :] + offsets[None, :, :]
+        else:
+            plaquettes = _plaquette(calculation)
+        result = solve_berry(model, plaquettes, gmax=gmax, bands=bands, rank=len(bands), numeig=numeig, pol=pol, convergence_status=calculation.get("convergence_status", "NOT_ASSESSED"))
         arrays = {key: value for key, value in result.items() if isinstance(value, np.ndarray)}
         summary.update({"qualification": result["qualification"], "raw_unsymmetrized": True, "polarization": pol})
     elif operation == "berry_curvature_dipole":

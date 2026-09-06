@@ -6,7 +6,7 @@ from typing import Any
 import numpy as np
 
 from .diagnostics import matrix_covariance_residual, operator_covariance_residual, rank1_wilson, rankn_wilson, reciprocal_c3_map
-from .geometry import point_group_operations
+from .geometry import first_bz_vertices, point_group_operations
 from .records import create_model_record
 from .solver import solve_bands
 
@@ -36,6 +36,31 @@ def _normalize_plaquettes(plaquettes: np.ndarray) -> tuple[np.ndarray, np.ndarra
     if np.any(np.sign(areas) != np.sign(areas[0])):
         raise ValueError("all plaquettes must have the same orientation")
     return values, areas
+
+
+def first_bz_plaquettes(lattice, *, grid_size: int = 3, step: float = 0.02) -> np.ndarray:
+    """Return a small batch of counter-clockwise plaquettes inside the first BZ."""
+    if int(grid_size) < 1 or float(step) <= 0:
+        raise ValueError("grid_size must be positive and step must be positive")
+    vertices = first_bz_vertices(lattice)
+    lower, upper = np.min(vertices, axis=0), np.max(vertices, axis=0)
+    # Candidate centers are selected from a regular grid and retained only when
+    # all four corners are inside the convex BZ polygon.
+    span = upper - lower
+    xs = np.linspace(lower[0] + span[0] / (grid_size + 1), upper[0] - span[0] / (grid_size + 1), int(grid_size))
+    ys = np.linspace(lower[1] + span[1] / (grid_size + 1), upper[1] - span[1] / (grid_size + 1), int(grid_size))
+    centers = np.stack(np.meshgrid(xs, ys, indexing="xy"), axis=-1).reshape(-1, 2)
+    def inside(points):
+        edges = np.roll(vertices, -1, axis=0) - vertices
+        rel = points[:, None, :] - vertices[None, :, :]
+        cross = edges[None, :, 0] * rel[:, :, 1] - edges[None, :, 1] * rel[:, :, 0]
+        return np.all(cross >= -1e-10, axis=1)
+    offsets = np.asarray([[-step, -step], [-step, step], [step, step], [step, -step]])
+    valid = inside((centers[:, None, :] + offsets[None, :, :]).reshape(-1, 2)).reshape(-1, 4).all(axis=1)
+    selected = centers[valid]
+    if len(selected) == 0:
+        raise ValueError("no first-BZ plaquettes fit the requested step/grid_size")
+    return selected[:, None, :] + offsets[None, :, :]
 
 
 def _unique_points(values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

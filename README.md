@@ -78,6 +78,23 @@ geometry, TE/TM solves, and reports symmetry `none`. The read-only
 
 Launch the compact Tkinter Studio directly with the pinned Windows interpreter:
 
+## Direct study entrypoints
+
+Each case has a small, import-safe launcher that bootstraps the project root,
+so it can be run directly from PyCharm or a terminal without `PYTHONPATH`:
+
+```powershell
+.venv\Scripts\python.exe studies\triangular\run_band.py
+.venv\Scripts\python.exe studies\square\run_berry.py
+.venv\Scripts\python.exe studies\affine\run_frequency.py
+```
+
+Edit `studies/<case>/case.py` for lattice, geometry, motifs, materials, and
+affine settings. Edit `parameters.py` for the current operation parameters.
+Use `run_*.py` for a single direct calculation; use `studio.py` for the
+project editor. Berry dipole calculations require an existing `QUALIFIED`
+Berry result and never synthesize curvature.
+
 ```powershell
 .venv\Scripts\python.exe studio.py
 ```

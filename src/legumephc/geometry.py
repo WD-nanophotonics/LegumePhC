@@ -71,10 +71,12 @@ class GeometrySpec:
     strict_c3: bool
     epsilon_background: float
     epsilon_inclusion: float
+    motif_kinds: tuple[str, ...] | None = None
+    motif_epsilons: tuple[float, ...] | None = None
     direct_basis: np.ndarray = field(default_factory=lambda: DIRECT_BASIS.copy())
     centers: np.ndarray = field(default_factory=lambda: SUBLATTICE_CENTERS.copy())
     ellipse_parameters: tuple[tuple[float, float, float] | None, ...] = ()
-    transformed_vertices: tuple[np.ndarray, ...] | None = None
+    transformed_vertices: tuple[np.ndarray | None, ...] | None = None
 
     def __post_init__(self) -> None:
         centers = np.asarray(self.centers, dtype=float)
@@ -84,13 +86,23 @@ class GeometrySpec:
             raise ValueError("polygon geometry requires one side count per motif radius")
         if len(self.angles_degrees) != len(self.radii):
             raise ValueError("angles_degrees must contain one angle per motif radius")
+        kinds = tuple(self.kind for _ in self.radii) if self.motif_kinds is None else tuple(self.motif_kinds)
+        if len(kinds) != len(self.radii) or any(kind not in {"circle", "polygon"} for kind in kinds):
+            raise ValueError("motif_kinds must contain circle or polygon for every motif")
+        epsilons = tuple(float(self.epsilon_inclusion) for _ in self.radii) if self.motif_epsilons is None else tuple(float(value) for value in self.motif_epsilons)
+        if len(epsilons) != len(self.radii):
+            raise ValueError("motif_epsilons must contain one value per motif")
+        if any(kind == "polygon" for kind in kinds) and (self.sides is None or len(self.sides) != len(self.radii)):
+            raise ValueError("polygon motifs require one side count per motif radius")
         if self.ellipse_parameters and len(self.ellipse_parameters) != len(self.radii):
             raise ValueError("ellipse_parameters must contain one entry per motif radius")
         if self.transformed_vertices is not None and len(self.transformed_vertices) != len(self.radii):
             raise ValueError("transformed_vertices must contain one entry per motif radius")
         object.__setattr__(self, "centers", centers)
+        object.__setattr__(self, "motif_kinds", kinds)
+        object.__setattr__(self, "motif_epsilons", epsilons)
         if self.transformed_vertices is not None:
-            object.__setattr__(self, "transformed_vertices", tuple(np.asarray(vertices, dtype=float) for vertices in self.transformed_vertices))
+            object.__setattr__(self, "transformed_vertices", tuple(None if vertices is None else np.asarray(vertices, dtype=float) for vertices in self.transformed_vertices))
 
 
 def geometry_spec(config: BenchmarkConfig, name: str) -> GeometrySpec:
@@ -110,6 +122,8 @@ def geometry_spec(config: BenchmarkConfig, name: str) -> GeometrySpec:
         strict_c3=bool(raw["strict_c3"]),
         epsilon_background=config.background_epsilon,
         epsilon_inclusion=config.inclusion_epsilon,
+        motif_kinds=tuple(str(raw["kind"]) for _ in raw["radii_nm"]),
+        motif_epsilons=tuple(float(value) for value in raw.get("epsilon_inclusions", [config.inclusion_epsilon] * len(raw["radii_nm"]))),
         direct_basis=DIRECT_BASIS.copy(),
         centers=SUBLATTICE_CENTERS.copy(),
     )
@@ -133,6 +147,8 @@ def square_circle_spec(
         strict_c3=False,
         epsilon_background=float(epsilon_background),
         epsilon_inclusion=float(epsilon_inclusion),
+        motif_kinds=("circle",),
+        motif_epsilons=(float(epsilon_inclusion),),
         direct_basis=np.eye(2),
         centers=np.array([[0.5, 0.5]], dtype=float),
     )
@@ -183,7 +199,10 @@ def point_group_geometry_residual(spec: GeometrySpec, lattice: Lattice2D, point_
                 continue
             if abs(spec.radii[index] - spec.radii[candidate]) > residual:
                 residual = abs(spec.radii[index] - spec.radii[candidate])
-            if spec.kind == "polygon":
+            if spec.motif_kinds[index] != spec.motif_kinds[candidate] or abs(spec.motif_epsilons[index] - spec.motif_epsilons[candidate]) > residual:
+                residual = max(residual, 1.0)
+                continue
+            if spec.motif_kinds[index] == "polygon":
                 assert spec.sides is not None
                 if spec.sides[index] != spec.sides[candidate]:
                     residual = max(residual, 1.0)
@@ -211,10 +230,10 @@ def area_matched_radius(radius: float, source_sides: int, target_sides: int) -> 
 
 
 def strict_c3_by_construction(spec: GeometrySpec) -> bool:
-    if spec.kind == "circle":
-        return True
-    assert spec.sides is not None
-    return all(sides % 3 == 0 for sides in spec.sides)
+    if any(kind == "polygon" for kind in spec.motif_kinds):
+        assert spec.sides is not None
+        return all(sides % 3 == 0 for kind, sides in zip(spec.motif_kinds, spec.sides) if kind == "polygon")
+    return True
 
 
 def first_bz_labels(lattice: Lattice2D) -> tuple[str, ...]:
@@ -227,20 +246,29 @@ def first_bz_labels(lattice: Lattice2D) -> tuple[str, ...]:
 
 def _first_bz_vertices_from_basis(basis: np.ndarray) -> np.ndarray:
     """Construct Wigner-Seitz vertices for the supplied reciprocal basis."""
-
-    from scipy.spatial import Voronoi
-
     basis = np.asarray(basis, dtype=float)
-    integer_points = np.asarray(
-        [[n1, n2] for n1 in range(-3, 4) for n2 in range(-3, 4) if (n1, n2) != (0, 0)],
-        dtype=float,
-    )
-    points = np.vstack((np.zeros((1, 2)), (basis @ integer_points.T).T))
-    diagram = Voronoi(points)
-    region = diagram.regions[diagram.point_region[0]]
-    if not region or -1 in region:
-        raise ValueError("could not construct a bounded first Brillouin zone")
-    vertices = diagram.vertices[np.asarray(region, dtype=int)]
+    # Clip a large convex polygon by the Wigner-Seitz half planes.  This is
+    # dependency-free and works for the skew affine lattices used by Studio.
+    scale = max(1.0, float(np.max(np.linalg.norm(basis, axis=0)))) * 8.0
+    polygon = [np.asarray([-scale, -scale]), np.asarray([scale, -scale]), np.asarray([scale, scale]), np.asarray([-scale, scale])]
+    reciprocal_points = [(basis @ np.asarray([n1, n2], dtype=float)) for n1 in range(-4, 5) for n2 in range(-4, 5) if (n1, n2) != (0, 0)]
+    for vector in reciprocal_points:
+        normal = np.asarray(vector, dtype=float)
+        limit = float(np.dot(normal, normal) / 2.0)
+        clipped = []
+        for start, end in zip(polygon, polygon[1:] + polygon[:1]):
+            start_inside = float(np.dot(normal, start)) <= limit + 1e-12
+            end_inside = float(np.dot(normal, end)) <= limit + 1e-12
+            if start_inside:
+                clipped.append(start)
+            if start_inside != end_inside:
+                denominator = float(np.dot(normal, end - start))
+                fraction = (limit - float(np.dot(normal, start))) / denominator
+                clipped.append(start + fraction * (end - start))
+        polygon = clipped
+        if not polygon:
+            raise ValueError("could not construct a bounded first Brillouin zone")
+    vertices = np.asarray(polygon)
     center = np.mean(vertices, axis=0)
     order = np.argsort(np.arctan2(vertices[:, 1] - center[1], vertices[:, 0] - center[0]))
     return vertices[order]
@@ -278,6 +306,9 @@ def identity_path(lattice: Lattice2D, samples_per_segment: int = 16) -> tuple[tu
     else:
         bz = first_bz_vertices(lattice)
         vertices = np.vstack((np.zeros(2), bz[0], bz[1], np.zeros(2)))
+    samples_per_segment = int(samples_per_segment)
+    if samples_per_segment < 2:
+        raise ValueError("samples_per_segment must be at least 2")
     points: list[np.ndarray] = []
     for start, end in zip(vertices[:-1], vertices[1:]):
         points.extend(np.linspace(start, end, samples_per_segment, endpoint=False))

@@ -21,18 +21,25 @@ def _lattice(case: dict[str, Any]) -> Lattice2D:
 def model_from_case(case: dict[str, Any]) -> Model2D:
     lattice = _lattice(case)
     geometry = case["geometry"]
-    kind = geometry["kind"]
+    motif_dicts = geometry.get("motifs")
+    if motif_dicts is None:
+        motif_dicts = [geometry]
+    kinds = tuple(str(item.get("kind", "circle")) for item in motif_dicts)
+    kind = kinds[0]
+    sides = tuple(int(item.get("sides", 8)) if item.get("kind", "circle") == "polygon" else 0 for item in motif_dicts)
     spec = GeometrySpec(
-        name=str(geometry.get("name", "StudioGeometry")),
+        name=str(geometry.get("name", case.get("name", "StudioGeometry"))),
         kind=kind,
-        radii=(float(geometry["radius"]),),
-        sides=None if kind == "circle" else (int(geometry.get("sides", 8)),),
-        angles_degrees=(float(geometry.get("angle_degrees", 0.0)),),
+        radii=tuple(float(item.get("radius", 0.2)) for item in motif_dicts),
+        sides=sides,
+        angles_degrees=tuple(float(item.get("angle_degrees", 0.0)) for item in motif_dicts),
         strict_c3=False,
         epsilon_background=float(geometry.get("epsilon_background", 7.29)),
         epsilon_inclusion=float(geometry.get("epsilon_inclusion", 1.0)),
+        motif_kinds=kinds,
+        motif_epsilons=tuple(float(item.get("epsilon", geometry.get("epsilon_inclusion", 1.0))) for item in motif_dicts),
         direct_basis=lattice.direct_basis,
-        centers=np.asarray([geometry.get("center", [0.5, 0.5])], dtype=float),
+        centers=np.asarray([item.get("center", [0.5, 0.5]) for item in motif_dicts], dtype=float),
     )
     affine_raw = case.get("affine", {})
     affine = Affine2D(np.asarray(affine_raw["linear"], dtype=float), np.asarray(affine_raw["translation"], dtype=float))

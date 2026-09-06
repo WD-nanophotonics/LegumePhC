@@ -25,7 +25,7 @@ def _motif_mask(points: np.ndarray, spec: GeometrySpec, basis: np.ndarray, index
         for n2 in range(-1, 2):
             shift = np.asarray(basis, dtype=float) @ np.array([n1, n2], dtype=float)
             local_points = points - center - shift
-            if spec.kind == "circle":
+            if spec.motif_kinds[index] == "circle":
                 ellipse = spec.ellipse_parameters[index] if spec.ellipse_parameters else None
                 if ellipse is None:
                     mask |= np.sum(local_points * local_points, axis=1) <= spec.radii[index] ** 2
@@ -36,7 +36,7 @@ def _motif_mask(points: np.ndarray, spec: GeometrySpec, basis: np.ndarray, index
                     mask |= (x1 / rx) ** 2 + (y1 / ry) ** 2 <= 1.0
             else:
                 assert spec.sides is not None
-                if spec.transformed_vertices is None:
+                if spec.transformed_vertices is None or spec.transformed_vertices[index] is None:
                     vertices = polygon_vertices(spec.radii[index], spec.sides[index], spec.angles_degrees[index], center)
                 else:
                     vertices = spec.transformed_vertices[index]
@@ -58,7 +58,7 @@ def _material_grid(spec: GeometrySpec, basis: np.ndarray, fractional: np.ndarray
     union = np.any(regions, axis=0)
     epsilon = np.full(len(points), spec.epsilon_background, dtype=float)
     for index, region in enumerate(regions):
-        epsilon[region] = spec.epsilon_inclusion
+        epsilon[region] = spec.motif_epsilons[index]
     return epsilon.reshape(fractional.shape[:-1]), np.vstack((regions, ~union)).reshape(len(regions) + 1, *fractional.shape[:-1])
 
 

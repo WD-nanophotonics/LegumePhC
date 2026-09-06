@@ -26,17 +26,19 @@ def build_layer(spec: GeometrySpec, *, lattice=None):
     lattice = legume.Lattice(a1, a2)
     layer = legume.ShapesLayer(lattice, eps_b=spec.epsilon_background)
     for index, (center, radius) in enumerate(zip(spec.centers, spec.radii)):
-        if spec.kind == "circle":
+        kind = spec.motif_kinds[index]
+        epsilon = spec.motif_epsilons[index]
+        if kind == "circle":
             ellipse = spec.ellipse_parameters[index] if spec.ellipse_parameters else None
             if ellipse is None:
-                shape = legume.Circle(eps=spec.epsilon_inclusion, x_cent=float(center[0]), y_cent=float(center[1]), r=radius)
+                shape = legume.Circle(eps=epsilon, x_cent=float(center[0]), y_cent=float(center[1]), r=radius)
             else:
                 rx, ry, phi = ellipse
-                shape = legume.Ellipse(eps=spec.epsilon_inclusion, x_cent=float(center[0]), y_cent=float(center[1]), rx=rx, ry=ry, phi=phi)
+                shape = legume.Ellipse(eps=epsilon, x_cent=float(center[0]), y_cent=float(center[1]), rx=rx, ry=ry, phi=phi)
         else:
             assert spec.sides is not None
-            vertices = polygon_vertices(radius, spec.sides[index], spec.angles_degrees[index], center) if spec.transformed_vertices is None else spec.transformed_vertices[index]
-            shape = legume.Poly(eps=spec.epsilon_inclusion, x_edges=vertices[:, 0], y_edges=vertices[:, 1])
+            vertices = polygon_vertices(radius, spec.sides[index], spec.angles_degrees[index], center) if spec.transformed_vertices is None or spec.transformed_vertices[index] is None else spec.transformed_vertices[index]
+            shape = legume.Poly(eps=epsilon, x_edges=vertices[:, 0], y_edges=vertices[:, 1])
         layer.add_shape(shape)
     return lattice, layer
 
@@ -184,6 +186,7 @@ def solve_bands(
     gmax: float,
     numeig: int = 4,
     pol: str = "te",
+    samples_per_segment: int = 16,
     record_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Solve bands on explicit q points or the identity high-symmetry path."""
@@ -192,12 +195,12 @@ def solve_bands(
     if path is not None:
         if path != "identity":
             raise ValueError("only the identity Gamma high-symmetry path is supported")
-        path_labels, path_points = identity_path(model.effective_lattice)
+        path_labels, path_points = identity_path(model.effective_lattice, samples_per_segment=samples_per_segment)
         if qpoints is not None and not np.allclose(qpoints, path_points):
             raise ValueError("qpoints and path identify different band paths")
         qpoints = path_points
     elif qpoints is None:
-        path_labels, qpoints = identity_path(model.effective_lattice)
+        path_labels, qpoints = identity_path(model.effective_lattice, samples_per_segment=samples_per_segment)
     qpoints = np.asarray(qpoints, dtype=float)
 
     if model.basis_policy in {"native", "circular"} or model.point_group is None:
@@ -220,7 +223,7 @@ def solve_bands(
     result["gmax"] = float(gmax)
     if record_root is not None:
         _record_solver_result(
-            record_root, model, "solve_bands", {"gmax": gmax, "numeig": numeig, "pol": pol, "path": path},
+            record_root, model, "solve_bands", {"gmax": gmax, "numeig": numeig, "pol": pol, "path": path, "samples_per_segment": samples_per_segment},
             {"status": "succeeded", "operation": "solve_bands", "path_labels": path_labels, "qpoint_count": len(qpoints), "polarization": pol.lower()}, result,
         )
     return result

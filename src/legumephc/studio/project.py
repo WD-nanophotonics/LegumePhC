@@ -11,10 +11,43 @@ from typing import Any
 import numpy as np
 
 
-PROJECT_SCHEMA = "legumephc-studio-project-v1"
+PROJECT_SCHEMA_V1 = "legumephc-studio-project-v1"
+PROJECT_SCHEMA_V2 = "legumephc-studio-project-v2"
+# Kept as the historical name for callers that build v1 worker payloads.
+PROJECT_SCHEMA = PROJECT_SCHEMA_V2
 PRESET_SCHEMA = "legumephc-studio-preset-v1"
 PROJECT_SUFFIX = ".legumephc-studio.json"
 PRESET_SUFFIX = ".legumephc-preset.json"
+
+
+class StudioProject(dict):
+    """Canonical v2 mapping with non-serialized v1 adapter views."""
+    def __getitem__(self, key):
+        if key == "case" and "model" in self:
+            return dict.__getitem__(self, "model")
+        if key == "calculation" and "calculations" in self:
+            return dict.__getitem__(self, "calculations")[0]["parameters"]
+        if key == "records" and "results" in self:
+            return [item.get("record_reference", item) for item in dict.__getitem__(self, "results")]
+        return dict.__getitem__(self, key)
+
+    def __setitem__(self, key, value):
+        if key == "case" and "model" in self:
+            return dict.__setitem__(self, "model", value)
+        if key == "calculation" and "calculations" in self:
+            dict.__getitem__(self, "calculations")[0]["parameters"] = value
+            dict.__getitem__(self, "calculations")[0]["operation"] = value.get("operation", dict.__getitem__(self, "calculations")[0]["operation"])
+            return
+        if key == "records" and "results" in self:
+            dict.__setitem__(self, "results", [{"id": f"result-{index}", "calculation_id": "calc-1", "record_reference": item, "model_snapshot": deepcopy(dict.__getitem__(self, "model")), "calculation_snapshot": deepcopy(dict.__getitem__(self, "calculations")[0]["parameters"]), "plot": deepcopy(dict.__getitem__(self, "plot"))} for index, item in enumerate(value, start=1)])
+            return
+        dict.__setitem__(self, key, value)
+
+    def get(self, key, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            return default
 
 
 def project_records_dir(project_path: str | Path) -> Path:
@@ -28,10 +61,7 @@ def _identity_affine() -> dict[str, Any]:
 
 
 def new_project(name: str = "Untitled") -> dict[str, Any]:
-    return {
-        "schema": PROJECT_SCHEMA,
-        "name": str(name),
-        "case": {
+    model = {
             "lattice": "square",
             "lattice_constant": 1.0,
             "direct_basis": [[1.0, 0.0], [0.0, 1.0]],
@@ -47,8 +77,8 @@ def new_project(name: str = "Untitled") -> dict[str, Any]:
             },
             "affine": _identity_affine(),
             "basis_policy": "auto",
-        },
-        "calculation": {
+        }
+    calculation = {
             "operation": "frequency_at_k",
             "qpoint": [0.2, 0.07],
             "band_one_based": 2,
@@ -57,16 +87,20 @@ def new_project(name: str = "Untitled") -> dict[str, Any]:
             "numeig": 4,
             "polarization": "te",
             "path": "identity",
+            "samples_per_segment": 16,
             "grid_size": 8,
             "efs_grid_size": 5,
             "berry_step": 0.02,
+            "sampling_mode": "single_plaquette",
+            "centers": [],
+            "convergence_status": "NOT_ASSESSED",
             "frequency_window": None,
             "frequency_samples": None,
             "response_weights": None,
             "occupation": None,
             "berry_record_path": None,
-        },
-        "plot": {
+        }
+    plot = {
             "width_px": 900,
             "height_px": 600,
             "dpi": 100,
@@ -79,10 +113,30 @@ def new_project(name: str = "Untitled") -> dict[str, Any]:
             "y_limits": None,
             "band_style": "line",
             "berry_coloring": False,
-        },
-        "records": [],
-        "selected_result": None,
+            "linewidth": 1.5,
+            "marker_size": 4.0,
+            "cmap": "viridis",
+            "berry_interpolation": False,
+            "berry_vmin": None,
+            "berry_vmax": None,
+            "colorbar": True,
+            "component_index": 0,
+            "field_quantity": "energy_density",
+            "x_limits": None,
+            "y_limits": None,
     }
+    calculations = [{"id": "calc-1", "name": "Frequency at k", "operation": calculation["operation"], "parameters": calculation}]
+    project = StudioProject({
+        "schema": PROJECT_SCHEMA_V2,
+        "name": str(name),
+        "model": model,
+        "calculations": calculations,
+        "results": [],
+        "selected_node": {"kind": "calculation", "id": "calc-1"},
+        "selected_result": None,
+        "plot": plot,
+    })
+    return project
 
 
 def new_preset(name: str = "Untitled preset") -> dict[str, Any]:
@@ -99,6 +153,58 @@ def _require(condition: bool, message: str) -> None:
         raise ValueError(message)
 
 
+def _bind_compatibility_views(project: dict[str, Any]) -> dict[str, Any]:
+    """Expose the old single-case views without making them the v2 source."""
+    return project if isinstance(project, StudioProject) else StudioProject(project)
+
+
+def migrate_project(project: dict[str, Any]) -> dict[str, Any]:
+    """Migrate a v1 project while preserving its immutable record references."""
+    if project.get("schema") != PROJECT_SCHEMA_V1:
+        return _bind_compatibility_views(project)
+    calculation = deepcopy(project["calculation"])
+    results = []
+    for index, reference in enumerate(project.get("records", []), start=1):
+        results.append({"id": f"result-{index}", "calculation_id": "calc-1", "record_reference": deepcopy(reference), "model_snapshot": deepcopy(project["case"]), "calculation_snapshot": deepcopy(calculation), "plot": deepcopy(project.get("plot", {}))})
+    selected_id = next((item["id"] for item in results if item["record_reference"].get("path") == project.get("selected_result")), None)
+    migrated = {
+        "schema": PROJECT_SCHEMA_V2,
+        "name": project.get("name", "Untitled"),
+        "model": deepcopy(project["case"]),
+        "calculations": [{"id": "calc-1", "name": calculation.get("operation", "Calculation"), "operation": calculation.get("operation", "frequency_at_k"), "parameters": calculation}],
+        "results": results,
+        "selected_node": {"kind": "result", "id": selected_id} if selected_id else {"kind": "calculation", "id": "calc-1"},
+        "selected_result": project.get("selected_result"),
+        "plot": deepcopy(project.get("plot", {})),
+    }
+    return _bind_compatibility_views(migrated)
+
+
+def _validate_calculation(calculation: dict[str, Any]) -> None:
+    _require(isinstance(calculation, dict), "project calculation must be an object")
+    operation = calculation.get("operation")
+    _require(operation in {"frequency_at_k", "band_structure", "fields_energy", "efs", "berry", "berry_curvature_dipole"}, "unsupported calculation operation")
+    _require(str(calculation.get("polarization", "")).lower() in {"te", "tm"}, "polarization must be TE or TM")
+    _require(int(calculation.get("numeig", 0)) > 0 and float(calculation.get("gmax", 0)) > 0, "calculation cutoff settings must be positive")
+    _require(int(calculation.get("band_one_based", 0)) >= 1, "band_one_based must be one-based")
+    _require(all(int(value) >= 1 for value in calculation.get("composite_bands_one_based", [])), "composite bands must be one-based")
+    if operation == "band_structure":
+        _require(int(calculation.get("samples_per_segment", 16)) >= 2, "samples_per_segment must be at least 2")
+    if operation in {"fields_energy", "efs"}:
+        _require(int(calculation.get("grid_size", calculation.get("efs_grid_size", 0))) >= 2, "grid size must be at least 2")
+    if operation == "berry":
+        _require(float(calculation.get("berry_step", 0)) > 0, "berry_step must be positive")
+        mode = calculation.get("sampling_mode", "single_plaquette")
+        _require(mode in {"single_plaquette", "first_bz_grid", "explicit_centers"}, "unsupported Berry sampling mode")
+        if mode == "first_bz_grid":
+            _require(int(calculation.get("grid_size", 0)) >= 1, "Berry grid_size must be positive")
+        if mode == "explicit_centers":
+            _require(isinstance(calculation.get("centers", []), list), "Berry centers must be a list")
+    if operation == "berry_curvature_dipole":
+        if calculation.get("berry_record_path") is not None:
+            _require(isinstance(calculation.get("berry_record_path"), str), "BCD Berry record path must be explicit")
+
+
 def _matrix(value: Any, shape: tuple[int, ...], name: str) -> None:
     array = np.asarray(value, dtype=float)
     _require(array.shape == shape, f"{name} must have shape {shape}")
@@ -106,10 +212,34 @@ def _matrix(value: Any, shape: tuple[int, ...], name: str) -> None:
 
 
 def validate_project(project: dict[str, Any]) -> dict[str, Any]:
-    _require(isinstance(project, dict) and project.get("schema") == PROJECT_SCHEMA, "unsupported Studio project schema")
-    for key in ("case", "calculation", "plot", "records", "selected_result"):
-        _require(key in project, f"project is missing {key}")
-    case = project["case"]
+    _require(isinstance(project, dict) and project.get("schema") in {PROJECT_SCHEMA_V1, PROJECT_SCHEMA_V2}, "unsupported Studio project schema")
+    if project.get("schema") == PROJECT_SCHEMA_V2:
+        for key in ("model", "calculations", "results", "plot", "selected_node"):
+            _require(key in project, f"project is missing {key}")
+        _require(isinstance(project["calculations"], list) and project["calculations"], "project must contain at least one calculation")
+        ids = [item.get("id") for item in project["calculations"]]
+        _require(all(isinstance(value, str) and value for value in ids) and len(set(ids)) == len(ids), "calculation ids must be stable and unique")
+        for item in project["calculations"]:
+            _require(isinstance(item, dict) and isinstance(item.get("parameters"), dict), "calculation entries need parameters")
+            _require(item.get("operation") == item["parameters"].get("operation"), "calculation operation and parameters disagree")
+            _validate_calculation(item["parameters"])
+        _require(isinstance(project["results"], list), "results must be a list")
+        result_ids = [result.get("id") for result in project["results"]]
+        _require(len(result_ids) == len(set(result_ids)), "result ids must be stable and unique")
+        for result in project["results"]:
+            _require(result.get("calculation_id") in ids, "result references an unknown calculation")
+            _require(isinstance(result.get("id"), str) and result.get("id"), "result ids must be stable")
+            _require(isinstance(result.get("model_snapshot"), dict) and isinstance(result.get("calculation_snapshot"), dict), "results must contain model and calculation snapshots")
+            bound = next(item for item in project["calculations"] if item["id"] == result["calculation_id"])
+            _require(result["calculation_snapshot"].get("operation") == bound["operation"], "result calculation snapshot is bound to the wrong calculation")
+            _require("geometry" in result["model_snapshot"] and "operation" not in result["model_snapshot"], "result model snapshot is malformed")
+        case = project["model"]
+        calculation = project["calculations"][0]["parameters"]
+    else:
+        for key in ("case", "calculation", "plot", "records", "selected_result"):
+            _require(key in project, f"project is missing {key}")
+        case = project["case"]
+        calculation = project["calculation"]
     _require(isinstance(case, dict), "project case must be an object")
     _require(case.get("lattice") in {"triangular", "square", "custom"}, "lattice must be triangular, square, or custom")
     geometry = case.get("geometry", {})
@@ -123,14 +253,17 @@ def validate_project(project: dict[str, Any]) -> dict[str, Any]:
     _require(float(geometry.get("radius", 0.0)) > 0.0, "geometry.radius must be positive")
     if geometry["kind"] == "polygon":
         _require(int(geometry.get("sides", 0)) >= 3, "polygon sides must be at least 3")
-    calculation = project["calculation"]
-    _require(isinstance(calculation, dict), "project calculation must be an object")
-    _require(calculation.get("operation") in {"frequency_at_k", "band_structure", "fields_energy", "efs", "berry", "berry_curvature_dipole"}, "unsupported calculation operation")
-    _require(str(calculation.get("polarization", "")).lower() in {"te", "tm"}, "polarization must be TE or TM")
-    _require(int(calculation.get("numeig", 0)) > 0 and float(calculation.get("gmax", 0)) > 0, "calculation cutoff settings must be positive")
-    _require(int(calculation.get("band_one_based", 0)) >= 1, "band_one_based must be one-based")
-    _require(all(int(value) >= 1 for value in calculation.get("composite_bands_one_based", [])), "composite bands must be one-based")
-    _require(isinstance(project["records"], list), "records must be a list")
+    for motif in geometry.get("motifs", []):
+        _require(isinstance(motif, dict) and motif.get("kind") in {"circle", "polygon"}, "each motif needs a circle or polygon kind")
+        _require(float(motif.get("radius", 0)) > 0, "each motif radius must be positive")
+        _matrix(motif.get("center"), (2,), "motif.center")
+        if motif["kind"] == "polygon":
+            _require(int(motif.get("sides", 0)) >= 3, "motif polygon sides must be at least 3")
+        if motif.get("epsilon") is not None:
+            _require(float(motif["epsilon"]) > 0, "motif epsilon must be positive")
+    _validate_calculation(calculation)
+    if project.get("schema") == PROJECT_SCHEMA_V1:
+        _require(isinstance(project["records"], list), "records must be a list")
     return project
 
 
@@ -166,7 +299,7 @@ def save_project(path: str | Path, project: dict[str, Any]) -> Path:
 
 def load_project(path: str | Path) -> dict[str, Any]:
     project = json.loads(Path(path).read_text(encoding="utf-8"))
-    return validate_project(project)
+    return validate_project(migrate_project(project))
 
 
 def save_preset(path: str | Path, preset: dict[str, Any]) -> Path:
@@ -186,7 +319,55 @@ def apply_preset(project: dict[str, Any], preset: dict[str, Any]) -> dict[str, A
     updated = deepcopy(project)
     updated["case"] = deepcopy(preset["parameters"]["case"])
     updated["calculation"] = deepcopy(preset["parameters"]["calculation"])
+    if updated.get("schema") == PROJECT_SCHEMA_V2:
+        updated["model"] = updated["case"]
+        updated["calculations"][0]["parameters"] = updated["calculation"]
+        updated["calculations"][0]["operation"] = updated["calculation"].get("operation", "frequency_at_k")
     return updated
+
+
+def calculation_by_id(project: dict[str, Any], calculation_id: str) -> dict[str, Any]:
+    validate_project(project)
+    for calculation in project["calculations"]:
+        if calculation["id"] == calculation_id:
+            return calculation
+    raise KeyError(f"unknown calculation id: {calculation_id}")
+
+
+def add_calculation(project: dict[str, Any], *, name: str = "New calculation", operation: str = "frequency_at_k", parameters: dict[str, Any] | None = None) -> dict[str, Any]:
+    validate_project(project)
+    ids = {item["id"] for item in project["calculations"]}
+    index = 1
+    while f"calc-{index}" in ids:
+        index += 1
+    base = deepcopy(parameters or project["calculations"][0]["parameters"])
+    base["operation"] = operation
+    project["calculations"].append({"id": f"calc-{index}", "name": name, "operation": operation, "parameters": base})
+    return project["calculations"][-1]
+
+
+def copy_calculation(project: dict[str, Any], calculation_id: str) -> dict[str, Any]:
+    source = calculation_by_id(project, calculation_id)
+    return add_calculation(project, name=f"Copy of {source.get('name', 'calculation')}", operation=source["operation"], parameters=source["parameters"])
+
+
+def rename_calculation(project: dict[str, Any], calculation_id: str, name: str) -> dict[str, Any]:
+    calculation = calculation_by_id(project, calculation_id)
+    calculation["name"] = str(name).strip() or calculation["id"]
+    return calculation
+
+
+def delete_calculation(project: dict[str, Any], calculation_id: str) -> dict[str, Any]:
+    calculation_by_id(project, calculation_id)
+    if len(project["calculations"]) <= 1:
+        raise ValueError("the project must retain one calculation")
+    if any(result.get("calculation_id") == calculation_id for result in project.get("results", [])):
+        raise ValueError("cannot delete a calculation referenced by an immutable result")
+    project["calculations"] = [item for item in project["calculations"] if item["id"] != calculation_id]
+    if project.get("selected_node", {}).get("id") == calculation_id:
+        project["selected_node"] = {"kind": "calculation", "id": project["calculations"][0]["id"]}
+    _bind_compatibility_views(project)
+    return project
 
 
 def _safe_relative(project_dir: Path, value: str) -> Path:
