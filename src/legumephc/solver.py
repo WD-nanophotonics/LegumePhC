@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -16,6 +16,12 @@ from .geometry import (
 from .records import create_model_record
 
 EIGENSOLVER_SHIFT = 1.0
+ProgressCallback = Callable[[dict[str, Any]], None]
+
+
+def _progress(callback: ProgressCallback | None, phase: str, *, completed: int | None = None, total: int | None = None, message: str = "") -> None:
+    if callback is not None:
+        callback({"phase": phase, "completed": completed, "total": total, "message": message})
 
 
 def build_layer(spec: GeometrySpec, *, lattice=None):
@@ -54,13 +60,15 @@ def q_to_legume_k(qpoints: np.ndarray) -> np.ndarray:
     return 2 * math.pi * np.asarray(qpoints, dtype=float)
 
 
-def solve_pwe(spec: GeometrySpec, qpoints: np.ndarray, *, gmax: float, numeig: int = 4, pol: str = "te", lattice=None) -> dict[str, Any]:
+def solve_pwe(spec: GeometrySpec, qpoints: np.ndarray, *, gmax: float, numeig: int = 4, pol: str = "te", lattice=None, progress: ProgressCallback | None = None) -> dict[str, Any]:
     import legume
 
     _, layer = build_layer(spec, lattice=lattice)
     pwe = legume.PlaneWaveExp(layer, gmax=gmax)
     kpoints = q_to_legume_k(qpoints).T
+    _progress(progress, "native eigensolver", total=len(kpoints.T), message="Legume native batch; exact intermediate percentage unavailable")
     pwe.run(kpoints=kpoints, pol=pol.lower(), numeig=numeig)
+    _progress(progress, "native eigensolver", completed=len(kpoints.T), total=len(kpoints.T), message="Native batch complete")
     return {
         "frequencies": np.asarray(pwe.freqs),
         "eigenvectors": np.asarray(pwe.eigvecs),
@@ -81,6 +89,7 @@ def solve_pwe_custom_basis(
     numeig: int = 4,
     pol: str = "te",
     lattice=None,
+    progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     """Standalone PWE solve for an explicitly supplied reciprocal basis.
 
@@ -102,7 +111,9 @@ def solve_pwe_custom_basis(
     kpoints = q_to_legume_k(qpoints).T
     frequencies = []
     eigenvectors = []
-    for k in kpoints.T:
+    total = len(kpoints.T)
+    _progress(progress, "eigensolver", completed=0, total=total, message=f"Solving {total} k points")
+    for index, k in enumerate(kpoints.T, start=1):
         kplusg = k[:, None] + gvec
         if pol.lower() == "te":
             matrix = (kplusg.T @ kplusg) * eps_inv_mat
@@ -116,6 +127,7 @@ def solve_pwe_custom_basis(
         order = np.argsort(freq)[:numeig]
         frequencies.append(freq[order])
         eigenvectors.append(evecs[:, order])
+        _progress(progress, "eigensolver", completed=index, total=total, message=f"Solved k point {index}/{total}")
     return {
         "frequencies": np.asarray(frequencies),
         "eigenvectors": np.asarray(eigenvectors),
@@ -138,12 +150,13 @@ def solve_pwe_closed_basis(
     numeig: int = 4,
     pol: str = "te",
     lattice=None,
+    progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     """Solve with the validated affine-C3 closure of one seed Legume basis."""
 
     return solve_pwe_point_group_closed_basis(
         spec, qpoints, seed_gmax=seed_gmax, closure_qpoints=closure_qpoints,
-        linear_operations=point_group_operations("C3"), numeig=numeig, pol=pol, lattice=lattice,
+        linear_operations=point_group_operations("C3"), numeig=numeig, pol=pol, lattice=lattice, progress=progress,
     )
 
 
@@ -157,16 +170,19 @@ def solve_pwe_point_group_closed_basis(
     numeig: int = 4,
     pol: str = "te",
     lattice=None,
+    progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     """Solve with an explicitly verified finite affine point-group closure."""
 
     from .diagnostics import point_group_orbit_closure
+    _progress(progress, "basis construction", message="Building point-group-closed reciprocal basis")
     seed = solve_pwe(spec, closure_qpoints, gmax=seed_gmax, numeig=numeig, pol=pol, lattice=lattice)
     direct_basis = spec.direct_basis if lattice is None else lattice.direct_basis
     closed_gvec = point_group_orbit_closure(
         seed["gvec"], closure_qpoints, list(linear_operations), direct_basis=direct_basis,
     )
-    result = solve_pwe_custom_basis(spec, qpoints, closed_gvec, numeig=numeig, pol=pol, lattice=lattice)
+    _progress(progress, "basis construction", completed=1, total=1, message=f"Closed basis contains {closed_gvec.shape[1]} vectors")
+    result = solve_pwe_custom_basis(spec, qpoints, closed_gvec, numeig=numeig, pol=pol, lattice=lattice, progress=progress)
     result["seed_gvec_count"] = int(seed["gvec"].shape[1])
     result["closed_gvec_count"] = int(closed_gvec.shape[1])
     result["point_group_operations"] = len(linear_operations)
@@ -188,6 +204,7 @@ def solve_bands(
     pol: str = "te",
     samples_per_segment: int = 16,
     record_root: str | Path | None = None,
+    progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     """Solve bands on explicit q points or the identity high-symmetry path."""
 
@@ -204,7 +221,7 @@ def solve_bands(
     qpoints = np.asarray(qpoints, dtype=float)
 
     if model.basis_policy in {"native", "circular"} or model.point_group is None:
-        result = solve_pwe(model.effective_geometry, qpoints, gmax=gmax, numeig=numeig, pol=pol, lattice=model.effective_lattice)
+        result = solve_pwe(model.effective_geometry, qpoints, gmax=gmax, numeig=numeig, pol=pol, lattice=model.effective_lattice, progress=progress)
     elif model.point_group in {"C3", "C4"}:
         operations = point_group_operations(model.point_group)
         if model.closure_qpoints is not None:
@@ -214,10 +231,10 @@ def solve_bands(
             closure_qpoints = np.asarray([operation @ seed for operation in operations])
         result = solve_pwe_point_group_closed_basis(
             model.effective_geometry, qpoints, seed_gmax=gmax, closure_qpoints=closure_qpoints,
-            linear_operations=operations, numeig=numeig, pol=pol, lattice=model.effective_lattice,
+            linear_operations=operations, numeig=numeig, pol=pol, lattice=model.effective_lattice, progress=progress,
         )
     else:
-        result = solve_pwe(model.effective_geometry, qpoints, gmax=gmax, numeig=numeig, pol=pol, lattice=model.effective_lattice)
+        result = solve_pwe(model.effective_geometry, qpoints, gmax=gmax, numeig=numeig, pol=pol, lattice=model.effective_lattice, progress=progress)
     result["qpoints"] = qpoints
     result["path_labels"] = path_labels
     result["gmax"] = float(gmax)
@@ -232,11 +249,12 @@ def solve_bands(
 def frequency_at_k(
     model, kpoint: np.ndarray, *, gmax: float, band: int = 0, pol: str = "te",
     record_root: str | Path | None = None,
+    progress: ProgressCallback | None = None,
 ) -> float:
     """Return one zero-based band frequency at a single Cartesian q point."""
 
     point = np.asarray(kpoint, dtype=float).reshape(1, 2)
-    result = solve_bands(model, point, gmax=gmax, numeig=max(4, band + 1), pol=pol)
+    result = solve_bands(model, point, gmax=gmax, numeig=max(4, band + 1), pol=pol, progress=progress)
     value = float(result["frequencies"][0, band])
     if record_root is not None:
         _record_solver_result(

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -43,6 +43,7 @@ def solve_efs(
     numeig: int = 4,
     pol: str = "te",
     record_root: str | Path | None = None,
+    progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Sample bands in reciprocal space and return iso-frequency-ready data."""
 
@@ -58,7 +59,7 @@ def solve_efs(
         sampling_domain = "explicit_sparse_samples"
     else:
         raise ValueError("provide qpoints or grid_size")
-    solved = solve_bands(model, qpoints, gmax=gmax, numeig=numeig, pol=pol)
+    solved = solve_bands(model, qpoints, gmax=gmax, numeig=numeig, pol=pol, progress=progress)
     selected = tuple(range(numeig)) if bands is None else tuple(int(band) for band in bands)
     frequencies = np.asarray(solved["frequencies"])[:, selected]
     output = {

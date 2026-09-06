@@ -29,7 +29,7 @@ from legumephc.studio.project import (
     save_project,
     validate_project,
 )
-from legumephc.studio.worker import REQUEST_SCHEMA, WorkerProcess, build_worker_request, execute_request, validate_request
+from legumephc.studio.worker import EVENT_SCHEMA, REQUEST_SCHEMA, WorkerProcess, build_worker_request, execute_request, validate_request
 
 
 def test_project_preset_roundtrip_and_preset_has_no_result_references(tmp_path):
@@ -95,6 +95,19 @@ def test_plot_fixture_and_exact_pixel_export(tmp_path):
     assert image.shape[1] == 400 and image.shape[0] == 300
 
 
+def test_band_plot_has_publication_defaults_and_independent_lines_markers(tmp_path):
+    record = create_record(tmp_path / "results", identity={"model": "Model2D", "geometry": "x", "affine": {}, "basis": {}, "solver": "test", "operation": "band_structure"}, config={}, summary={"status": "succeeded", "path_labels": ["Gamma", "K", "M", "Gamma"]}, arrays={"frequencies": np.asarray([[0.1, 0.2], [0.2, 0.3], [0.15, 0.25], [0.1, 0.2]]), "qpoints": np.zeros((4, 2))})
+    figure = plot_record(record, {"band_line": True, "band_markers": True, "grid": False})
+    axis = figure.axes[0]
+    assert axis.get_title() == ""
+    assert axis.get_xlabel() == ""
+    assert axis.get_ylabel() == "Normalized frequency (ωa/2πc)"
+    assert [tick.get_text() for tick in axis.get_xticklabels()] == ["Γ", "K", "M", "Γ"]
+    assert len(axis.lines) == 2 and len(axis.collections) == 2
+    with pytest.raises(ValueError, match="Band lines"):
+        plot_record(record, {"band_line": False, "band_markers": False})
+
+
 def test_plot_berry_uses_multi_plaquette_centers_and_status(tmp_path):
     plaquettes = np.asarray([
         [[0.0, 0.0], [0.0, 0.1], [0.1, 0.1], [0.1, 0.0]],
@@ -105,7 +118,7 @@ def test_plot_berry_uses_multi_plaquette_centers_and_status(tmp_path):
     axis = figure.axes[0]
     offsets = axis.collections[0].get_offsets()
     assert offsets.shape == (2, 2)
-    assert "UNQUALIFIED_CONVERGENCE_NOT_ASSESSED" in figure.texts[0].get_text()
+    assert figure.texts == []  # qualification belongs in Studio metadata, not the exported science figure
 
 
 def test_plot_efs_reconstructs_grid_contour_and_labels_sparse(tmp_path):
@@ -119,7 +132,8 @@ def test_plot_efs_reconstructs_grid_contour_and_labels_sparse(tmp_path):
 
     sparse = create_record(tmp_path / "results", identity={"model": "Model2D", "geometry": "x", "affine": {}, "basis": {}, "solver": "test", "operation": "efs"}, config={}, summary={"status": "succeeded", "operation": "efs"}, arrays={"qpoints": grid[:3], "frequencies": frequencies[:3]})
     sparse_figure = plot_record(sparse)
-    assert "sparse" in sparse_figure.axes[0].get_title().lower()
+    assert sparse_figure.axes[0].get_title() == ""
+    assert sparse_figure.axes[0].collections
 
 
 def test_fake_worker_success_failure_cancel_and_no_orphan(tmp_path):
@@ -143,6 +157,16 @@ def test_fake_worker_success_failure_cancel_and_no_orphan(tmp_path):
     assert cancel.process.poll() is not None and not cancel_path.exists()
     time.sleep(0.05)
     assert cancel.process.poll() is not None
+
+
+def test_worker_process_exposes_versioned_progress_events(tmp_path):
+    request_path = tmp_path / "events.json"
+    request_path.write_text("{}", encoding="utf-8")
+    payload = json.dumps({"schema": EVENT_SCHEMA, "event": "progress", "phase": "eigensolver", "completed": 2, "total": 4})
+    worker = WorkerProcess(subprocess.Popen([sys.executable, "-c", f"print({payload!r}, flush=True)"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True), request_path)
+    worker.communicate()
+    events = worker.read_events()
+    assert events == [{"schema": EVENT_SCHEMA, "event": "progress", "phase": "eigensolver", "completed": 2, "total": 4}]
 
 
 def test_record_reload_type_check(tmp_path):
@@ -211,7 +235,7 @@ def test_saved_project_sidecar_and_old_result_can_be_reloaded_and_replotted(tmp_
     reopened = load_project(project_path)
     reopened["calculation"]["operation"] = "efs"
     assert record_available(project_path.parent, reopened["records"][0], operation="efs")[0]
-    assert plot_record(project_path.parent / reopened["selected_result"]).axes[0].get_xticklabels()[0].get_text() == "Gamma"
+    assert plot_record(project_path.parent / reopened["selected_result"]).axes[0].get_xticklabels()[0].get_text() == "Γ"
 
 
 def test_run_request_requires_saved_project_and_uses_project_sidecar(tmp_path):

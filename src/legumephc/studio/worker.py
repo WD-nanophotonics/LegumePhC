@@ -6,6 +6,8 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import queue
+import threading
 from typing import Any
 from copy import deepcopy
 
@@ -18,6 +20,7 @@ from .project import project_records_dir, record_available, validate_project
 
 
 REQUEST_SCHEMA = "legumephc-studio-worker-request-v1"
+EVENT_SCHEMA = "legumephc-studio-worker-event-v1"
 
 
 def build_worker_request(project: dict[str, Any], project_path: str | Path) -> dict[str, Any]:
@@ -135,7 +138,7 @@ def _record_identity(model, operation: str) -> dict[str, Any]:
     }
 
 
-def execute_request(request: dict[str, Any]) -> dict[str, Any]:
+def execute_request(request: dict[str, Any], *, progress=None) -> dict[str, Any]:
     request = validate_request(request)
     calculation = request["calculation"]
     operation = calculation["operation"]
@@ -150,21 +153,21 @@ def execute_request(request: dict[str, Any]) -> dict[str, Any]:
         summary["point_group"] = model.point_group
     if operation == "frequency_at_k":
         qpoint = np.asarray(calculation["qpoint"], dtype=float)
-        value = frequency_at_k(model, qpoint, gmax=gmax, band=zero_based_band(calculation["band_one_based"]), pol=pol)
+        value = frequency_at_k(model, qpoint, gmax=gmax, band=zero_based_band(calculation["band_one_based"]), pol=pol, progress=progress)
         arrays = {"qpoint": qpoint.reshape(1, 2), "frequency": np.asarray([value])}
         summary.update({"frequency": value, "band_one_based": calculation["band_one_based"], "polarization": pol})
     elif operation == "band_structure":
-        result = solve_bands(model, path=calculation.get("path", "identity"), gmax=gmax, numeig=numeig, pol=pol, samples_per_segment=int(calculation.get("samples_per_segment", 16)))
+        result = solve_bands(model, path=calculation.get("path", "identity"), gmax=gmax, numeig=numeig, pol=pol, samples_per_segment=int(calculation.get("samples_per_segment", 16)), progress=progress)
         arrays = {key: value for key, value in result.items() if isinstance(value, np.ndarray)}
         summary.update({"path_labels": result["path_labels"], "qpoint_count": len(result["qpoints"]), "polarization": pol})
     elif operation == "fields_energy":
         qpoint = np.asarray(calculation["qpoint"], dtype=float).reshape(1, 2)
-        result = solve_bands(model, qpoint, gmax=gmax, numeig=numeig, pol=pol)
+        result = solve_bands(model, qpoint, gmax=gmax, numeig=numeig, pol=pol, progress=progress)
         observed = compute_field_observables(result, model, bands=bands, grid_size=int(calculation["grid_size"]))
         arrays = {key: value for key, value in observed.items() if isinstance(value, np.ndarray)}
         summary.update({"bands_zero_based": bands, "grid_size": int(calculation["grid_size"]), "gauge_invariant": True, "polarization": pol})
     elif operation == "efs":
-        result = solve_efs(model, gmax=gmax, grid_size=int(calculation["efs_grid_size"]), bands=bands, numeig=numeig, pol=pol)
+        result = solve_efs(model, gmax=gmax, grid_size=int(calculation["efs_grid_size"]), bands=bands, numeig=numeig, pol=pol, progress=progress)
         arrays = {key: value for key, value in result.items() if isinstance(value, np.ndarray)}
         summary.update({"bands_zero_based": bands, "sampling_domain": result["sampling_domain"], "grid_shape": result["grid_shape"], "sample_count": len(result["qpoints"]), "polarization": pol})
     elif operation == "berry":
@@ -179,7 +182,7 @@ def execute_request(request: dict[str, Any]) -> dict[str, Any]:
             plaquettes = centers[:, None, :] + offsets[None, :, :]
         else:
             plaquettes = _plaquette(calculation)
-        result = solve_berry(model, plaquettes, gmax=gmax, bands=bands, rank=len(bands), numeig=numeig, pol=pol, convergence_status=calculation.get("convergence_status", "NOT_ASSESSED"))
+        result = solve_berry(model, plaquettes, gmax=gmax, bands=bands, rank=len(bands), numeig=numeig, pol=pol, convergence_status=calculation.get("convergence_status", "NOT_ASSESSED"), progress=progress)
         arrays = {key: value for key, value in result.items() if isinstance(value, np.ndarray)}
         summary.update({"qualification": result["qualification"], "raw_unsymmetrized": True, "polarization": pol})
     elif operation == "berry_curvature_dipole":
@@ -202,17 +205,28 @@ def execute_request(request: dict[str, Any]) -> dict[str, Any]:
     if source is not None:
         record_config["source_berry"] = {"path": source["reference"]["path"], "files": source["reference"]["files"], "identity": source["identity"], "qualification": source["summary"].get("qualification")}
     record = create_record(request["records_dir"], identity=identity, config=record_config, summary=summary, arrays=arrays)
+    if progress is not None:
+        progress({"phase": "record", "completed": 1, "total": 1, "message": "Immutable record written", "record_path": str(record.resolve())})
     return {"record_path": str(record.resolve()), "metadata": {"operation": operation, "summary": summary}}
 
 
 def _child_main(request_path: str) -> int:
+    def emit(event: str, **payload: Any) -> None:
+        print(json.dumps({"schema": EVENT_SCHEMA, "event": event, **payload}, sort_keys=True), flush=True)
+
     try:
         request = json.loads(Path(request_path).read_text(encoding="utf-8"))
-        result = execute_request(request)
-        print(json.dumps({"ok": True, **result}, sort_keys=True), flush=True)
+        calculation = request.get("calculation", {})
+        emit("started", operation=calculation.get("operation"), gmax=calculation.get("gmax"), bands=calculation.get("composite_bands_one_based"))
+        emit("phase", phase="validation", message="Request and model validated")
+        def report(payload: dict[str, Any]) -> None:
+            event = "record_written" if payload.get("phase") == "record" else ("progress" if payload.get("completed") is not None else "phase")
+            emit(event, **payload)
+        result = execute_request(request, progress=report)
+        emit("completed", ok=True, **result)
         return 0
     except Exception as exc:  # the parent receives a small structured failure
-        print(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"}, sort_keys=True), flush=True)
+        emit("failed", ok=False, error=f"{type(exc).__name__}: {exc}")
         return 1
 
 
@@ -222,12 +236,46 @@ class WorkerProcess:
     def __init__(self, process: subprocess.Popen[str], request_path: Path):
         self.process = process
         self.request_path = request_path
+        self._events: queue.Queue[dict[str, Any]] = queue.Queue()
+        self._stdout_lines: list[str] = []
+        self._stderr_lines: list[str] = []
+        self._readers = [
+            threading.Thread(target=self._read_stream, args=(process.stdout, self._stdout_lines, True), daemon=True),
+            threading.Thread(target=self._read_stream, args=(process.stderr, self._stderr_lines, False), daemon=True),
+        ]
+        for reader in self._readers:
+            reader.start()
+
+    def _read_stream(self, stream, lines: list[str], parse_events: bool) -> None:
+        if stream is None:
+            return
+        for raw in iter(stream.readline, ""):
+            line = raw.rstrip("\r\n")
+            lines.append(line)
+            if parse_events:
+                try:
+                    value = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if value.get("schema") == EVENT_SCHEMA:
+                    self._events.put(value)
+
+    def read_events(self) -> list[dict[str, Any]]:
+        values = []
+        while True:
+            try:
+                values.append(self._events.get_nowait())
+            except queue.Empty:
+                return values
 
     def poll(self) -> int | None:
         return self.process.poll()
 
     def communicate(self) -> tuple[str, str]:
-        stdout, stderr = self.process.communicate()
+        self.process.wait()
+        for reader in self._readers:
+            reader.join(timeout=2)
+        stdout, stderr = "\n".join(self._stdout_lines), "\n".join(self._stderr_lines)
         self._cleanup()
         return stdout, stderr
 
@@ -239,6 +287,8 @@ class WorkerProcess:
             except subprocess.TimeoutExpired:
                 self.process.kill()
                 self.process.wait(timeout=5)
+        for reader in self._readers:
+            reader.join(timeout=2)
         self._cleanup()
 
     def _cleanup(self) -> None:

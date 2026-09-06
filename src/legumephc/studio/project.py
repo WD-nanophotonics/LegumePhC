@@ -62,20 +62,22 @@ def _identity_affine() -> dict[str, Any]:
 
 def new_project(name: str = "Untitled") -> dict[str, Any]:
     model = {
-            "lattice": "square",
+            "name": "TriangularCircle",
+            "lattice": "triangular",
             "lattice_constant": 1.0,
-            "direct_basis": [[1.0, 0.0], [0.0, 1.0]],
+            "direct_basis": [[0.5, 0.5], [0.8660254037844386, -0.8660254037844386]],
             "geometry": {
-                "name": "SquareCircle",
+                "name": "TriangularCircle",
                 "kind": "circle",
                 "radius": 0.2,
                 "sides": 16,
                 "angle_degrees": 0.0,
-                "center": [0.5, 0.5],
+                "center": [0.0, 0.0],
                 "epsilon_background": 7.29,
                 "epsilon_inclusion": 1.0,
             },
             "affine": _identity_affine(),
+            "deformation": {"kind": "none", "factor": 1.0, "angle_degrees": 0.0, "linear": [[1.0, 0.0], [0.0, 1.0]], "translation": [0.0, 0.0]},
             "basis_policy": "auto",
         }
     calculation = {
@@ -112,6 +114,8 @@ def new_project(name: str = "Untitled") -> dict[str, Any]:
             "x_limits": None,
             "y_limits": None,
             "band_style": "line",
+            "band_line": True,
+            "band_markers": False,
             "berry_coloring": False,
             "linewidth": 1.5,
             "marker_size": 4.0,
@@ -135,6 +139,7 @@ def new_project(name: str = "Untitled") -> dict[str, Any]:
         "selected_node": {"kind": "calculation", "id": "calc-1"},
         "selected_result": None,
         "plot": plot,
+        "ui_state": {"material_representation": "epsilon", "advanced_expanded": False, "active_geometry_tab": "Motif", "selected_motif": "motif-1"},
     })
     return project
 
@@ -144,7 +149,7 @@ def new_preset(name: str = "Untitled preset") -> dict[str, Any]:
     return {
         "schema": PRESET_SCHEMA,
         "name": str(name),
-        "parameters": {"case": project["case"], "calculation": project["calculation"]},
+        "parameters": {"case": project["case"], "calculation": project["calculation"], "ui_state": deepcopy(project["ui_state"])},
     }
 
 
@@ -161,6 +166,10 @@ def _bind_compatibility_views(project: dict[str, Any]) -> dict[str, Any]:
 def migrate_project(project: dict[str, Any]) -> dict[str, Any]:
     """Migrate a v1 project while preserving its immutable record references."""
     if project.get("schema") != PROJECT_SCHEMA_V1:
+        plot = project.setdefault("plot", {})
+        legacy = plot.get("band_style", "line")
+        plot.setdefault("band_line", legacy != "scatter")
+        plot.setdefault("band_markers", legacy in {"scatter", "cycle"})
         return _bind_compatibility_views(project)
     calculation = deepcopy(project["calculation"])
     results = []
@@ -177,6 +186,9 @@ def migrate_project(project: dict[str, Any]) -> dict[str, Any]:
         "selected_result": project.get("selected_result"),
         "plot": deepcopy(project.get("plot", {})),
     }
+    legacy = migrated["plot"].get("band_style", "line")
+    migrated["plot"].setdefault("band_line", legacy != "scatter")
+    migrated["plot"].setdefault("band_markers", legacy in {"scatter", "cycle"})
     return _bind_compatibility_views(migrated)
 
 
@@ -242,11 +254,23 @@ def validate_project(project: dict[str, Any]) -> dict[str, Any]:
         calculation = project["calculation"]
     _require(isinstance(case, dict), "project case must be an object")
     _require(case.get("lattice") in {"triangular", "square", "custom"}, "lattice must be triangular, square, or custom")
+    lattice_constant = float(case.get("lattice_constant", 1.0))
+    _require(np.isfinite(lattice_constant) and lattice_constant > 0, "lattice_constant must be positive and finite")
     geometry = case.get("geometry", {})
     _require(isinstance(geometry, dict), "project geometry must be an object")
     _require(geometry.get("kind") in {"circle", "polygon"}, "geometry kind must be circle or polygon")
     _matrix(case.get("affine", {}).get("linear"), (2, 2), "affine.linear")
     _matrix(case.get("affine", {}).get("translation"), (2,), "affine.translation")
+    _require(np.isfinite(float(geometry.get("epsilon_background", 0.0))) and float(geometry.get("epsilon_background", 0.0)) > 0, "epsilon_background must be positive and finite")
+    deformation = case.get("deformation")
+    if deformation is not None:
+        _require(deformation.get("kind") in {"none", "uniaxial", "custom"}, "unsupported deformation kind")
+        _matrix(deformation.get("translation", [0.0, 0.0]), (2,), "deformation.translation")
+        if deformation.get("kind") == "uniaxial":
+            factor = float(deformation.get("factor", 0.0))
+            _require(np.isfinite(factor) and factor > 0, "uniaxial factor must be positive and finite")
+        elif deformation.get("kind") == "custom":
+            _matrix(deformation.get("linear"), (2, 2), "deformation.linear")
     if case["lattice"] == "custom":
         _matrix(case.get("direct_basis"), (2, 2), "direct_basis")
     _matrix(geometry.get("center"), (2,), "geometry.center")
@@ -271,8 +295,12 @@ def validate_preset(preset: dict[str, Any]) -> dict[str, Any]:
     _require(isinstance(preset, dict) and preset.get("schema") == PRESET_SCHEMA, "unsupported Studio preset schema")
     _require(set(preset) == {"schema", "name", "parameters"}, "presets contain parameters only and no result references")
     parameters = preset["parameters"]
-    _require(isinstance(parameters, dict) and set(parameters) == {"case", "calculation"}, "preset parameters must contain case and calculation")
-    validate_project({**new_project(preset.get("name", "")), "case": parameters["case"], "calculation": parameters["calculation"]})
+    _require(isinstance(parameters, dict) and set(parameters).issubset({"case", "calculation", "ui_state"}) and {"case", "calculation"}.issubset(parameters), "preset parameters must contain case and calculation")
+    candidate = new_project(preset.get("name", ""))
+    candidate["model"] = deepcopy(parameters["case"])
+    candidate["calculations"][0]["parameters"] = deepcopy(parameters["calculation"])
+    candidate["calculations"][0]["operation"] = parameters["calculation"].get("operation", "frequency_at_k")
+    validate_project(candidate)
     return preset
 
 
@@ -319,6 +347,8 @@ def apply_preset(project: dict[str, Any], preset: dict[str, Any]) -> dict[str, A
     updated = deepcopy(project)
     updated["case"] = deepcopy(preset["parameters"]["case"])
     updated["calculation"] = deepcopy(preset["parameters"]["calculation"])
+    if "ui_state" in preset["parameters"]:
+        updated["ui_state"] = deepcopy(preset["parameters"]["ui_state"])
     if updated.get("schema") == PROJECT_SCHEMA_V2:
         updated["model"] = updated["case"]
         updated["calculations"][0]["parameters"] = updated["calculation"]

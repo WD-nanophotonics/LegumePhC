@@ -4,7 +4,7 @@ from typing import Any
 
 import numpy as np
 
-from ..geometry import polygon_vertices
+from ..geometry import first_bz_vertices, polygon_vertices
 from .profile import model_from_case
 
 
@@ -38,20 +38,42 @@ def _motif_mask(points: np.ndarray, spec, basis: np.ndarray) -> np.ndarray:
     return result
 
 
+def _motif_render_specs(spec) -> list[dict[str, Any]]:
+    """Expose physical motif shapes for the Studio's vector preview patches."""
+    shapes = []
+    for index, center in enumerate(spec.centers):
+        if spec.motif_kinds[index] == "circle":
+            ellipse = spec.ellipse_parameters[index] if spec.ellipse_parameters else None
+            if ellipse is None:
+                shapes.append({"kind": "circle", "center": np.asarray(center).copy(), "radius": float(spec.radii[index])})
+            else:
+                rx, ry, phi = ellipse
+                shapes.append({"kind": "ellipse", "center": np.asarray(center).copy(), "width": float(2 * rx), "height": float(2 * ry), "angle_degrees": float(np.degrees(phi))})
+        else:
+            vertices = spec.transformed_vertices[index] if spec.transformed_vertices is not None and spec.transformed_vertices[index] is not None else polygon_vertices(spec.radii[index], spec.sides[index], spec.angles_degrees[index], center)
+            shapes.append({"kind": "polygon", "vertices": np.asarray(vertices).copy()})
+    return shapes
+
+
 def preview_geometry(case: dict[str, Any], *, view: str = "unit_cell", size: int = 128) -> dict[str, Any]:
     """Build a solver-free geometry/epsilon preview for the Studio canvas."""
 
-    if view not in {"unit_cell", "motif_array", "lattice_sites", "epsilon"}:
-        raise ValueError("view must be unit_cell, motif_array, lattice_sites, or epsilon")
+    if view not in {"motif", "unit_cell", "motif_array", "lattice_sites", "reciprocal_bz", "epsilon"}:
+        raise ValueError("unsupported geometry preview view")
     if int(size) < 8:
         raise ValueError("preview size must be at least 8")
     model = model_from_case(case)
     lattice = model.effective_lattice
     spec = model.effective_geometry
+    if view == "reciprocal_bz":
+        reciprocal = lattice.reciprocal_basis
+        sites = np.asarray([n1 * reciprocal[:, 0] + n2 * reciprocal[:, 1] for n1 in range(-1, 2) for n2 in range(-1, 2)], dtype=float)
+        identity_residual = float(np.max(np.abs(lattice.direct_basis.T @ reciprocal - 2.0 * np.pi * np.eye(2))))
+        return {"view": view, "points": sites, "epsilon": None, "shape": None, "equal_aspect": True, "direct_basis": lattice.direct_basis.copy(), "reciprocal_basis": reciprocal.copy(), "bz_vertices": first_bz_vertices(lattice) * (2.0 * np.pi), "reciprocal_identity_residual": identity_residual}
     if view == "lattice_sites":
         sites = np.asarray([n1 * lattice.direct_basis[:, 0] + n2 * lattice.direct_basis[:, 1] for n1 in range(-1, 2) for n2 in range(-1, 2)], dtype=float)
         return {"view": view, "points": sites, "epsilon": None, "shape": None, "equal_aspect": True, "direct_basis": lattice.direct_basis.copy()}
-    extent = (0.0, 1.0) if view in {"unit_cell", "epsilon"} else (-1.0, 2.0)
+    extent = (0.0, 1.0) if view in {"motif", "unit_cell", "epsilon"} else (-1.0, 2.0)
     coordinates = np.linspace(extent[0], extent[1], int(size))
     fractional = np.stack(np.meshgrid(coordinates, coordinates, indexing="xy"), axis=-1)
     points = (fractional @ lattice.direct_basis.T).reshape(-1, 2)
@@ -82,4 +104,7 @@ def preview_geometry(case: dict[str, Any], *, view: str = "unit_cell", size: int
         "equal_aspect": True,
         "direct_basis": lattice.direct_basis.copy(),
         "point_group": model.point_group,
+        "a1": lattice.direct_basis[:, 0].copy(),
+        "a2": lattice.direct_basis[:, 1].copy(),
+        "motifs": _motif_render_specs(spec),
     }

@@ -6,6 +6,7 @@ import numpy as np
 
 from ..geometry import Affine2D, GeometrySpec, Lattice2D
 from ..model import Model2D
+from .geometry_editor import uniaxial_matrix
 
 
 def _lattice(case: dict[str, Any]) -> Lattice2D:
@@ -16,6 +17,24 @@ def _lattice(case: dict[str, Any]) -> Lattice2D:
     if kind == "square":
         return Lattice2D.square(scale)
     return Lattice2D(np.asarray(case["direct_basis"], dtype=float), kind="custom")
+
+
+def _affine(case: dict[str, Any]) -> Affine2D:
+    deformation = case.get("deformation")
+    if deformation:
+        kind = deformation.get("kind", "none")
+        if kind == "none":
+            linear = np.eye(2)
+        elif kind == "uniaxial":
+            linear = uniaxial_matrix(deformation.get("factor", 1.0), deformation.get("angle_degrees", 0.0))
+        elif kind == "custom":
+            linear = np.asarray(deformation.get("linear"), dtype=float)
+        else:
+            raise ValueError("deformation must be none, uniaxial, or custom")
+        translation = np.asarray(deformation.get("translation", [0.0, 0.0]), dtype=float)
+        return Affine2D(linear, translation)
+    affine_raw = case.get("affine", {})
+    return Affine2D(np.asarray(affine_raw.get("linear", np.eye(2)), dtype=float), np.asarray(affine_raw.get("translation", [0.0, 0.0]), dtype=float))
 
 
 def model_from_case(case: dict[str, Any]) -> Model2D:
@@ -41,8 +60,7 @@ def model_from_case(case: dict[str, Any]) -> Model2D:
         direct_basis=lattice.direct_basis,
         centers=np.asarray([item.get("center", [0.5, 0.5]) for item in motif_dicts], dtype=float),
     )
-    affine_raw = case.get("affine", {})
-    affine = Affine2D(np.asarray(affine_raw["linear"], dtype=float), np.asarray(affine_raw["translation"], dtype=float))
+    affine = _affine(case)
     return Model2D(spec, lattice, affine=affine, basis_policy=str(case.get("basis_policy", "auto")))
 
 

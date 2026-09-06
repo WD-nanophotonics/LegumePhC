@@ -24,9 +24,12 @@ def test_model2d_band_api_and_frequency_at_k():
     config = load_benchmark()
     model = Model2D.from_benchmark(config, "G15")
     qpoints = np.array([[0.4722222222222222, 0.0], [0.7638888888888888, -0.16839383310241256], [0.7638888888888888, 0.16839383310241256]])
-    result = solve_bands(model, qpoints, gmax=2, numeig=4)
+    events = []
+    result = solve_bands(model, qpoints, gmax=2, numeig=4, progress=events.append)
     assert result["closed_gvec_count"] > result["seed_gvec_count"]
     assert np.isclose(frequency_at_k(model, qpoints[0], gmax=2, band=1), result["frequencies"][0, 1])
+    solved = [event for event in events if event["phase"] == "eigensolver" and event.get("completed")]
+    assert solved[-1]["completed"] == solved[-1]["total"] == len(qpoints)
 
 
 def test_model2d_c4_auto_uses_generic_closed_solver():

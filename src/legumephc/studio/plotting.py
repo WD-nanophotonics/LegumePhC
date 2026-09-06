@@ -9,7 +9,11 @@ from matplotlib.figure import Figure
 
 
 def default_plot_style() -> dict[str, Any]:
-    return {"width_px": 900, "height_px": 600, "dpi": 100, "title": "", "x_label": "", "y_label": "", "grid": True, "legend": True, "x_limits": None, "y_limits": None, "band_style": "line", "linewidth": 1.5, "marker_size": 4.0, "cmap": "viridis", "berry_coloring": False, "berry_interpolation": False, "berry_vmin": None, "berry_vmax": None, "colorbar": True, "component_index": 0, "field_quantity": "energy_density", "font_size": 10.0}
+    return {"width_px": 900, "height_px": 600, "dpi": 100, "title": "", "x_label": "", "y_label": "", "grid": True, "legend": True, "x_limits": None, "y_limits": None, "band_style": "line", "band_line": True, "band_markers": False, "linewidth": 1.5, "marker_size": 4.0, "cmap": "viridis", "berry_coloring": False, "berry_interpolation": False, "berry_vmin": None, "berry_vmax": None, "colorbar": True, "component_index": 0, "field_quantity": "energy_density", "font_size": 10.0}
+
+
+def _path_label(value: Any) -> str:
+    return "Γ" if str(value).strip().lower() in {"gamma", "γ", "g"} else str(value)
 
 
 def _load_record(record_path: str | Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, np.ndarray]]:
@@ -58,22 +62,29 @@ def plot_record(record_path: str | Path, style: dict[str, Any] | None = None) ->
     if operation in {"solve_bands", "band_structure"} and "frequencies" in arrays:
         frequencies = np.asarray(arrays["frequencies"])
         x = np.arange(frequencies.shape[0])
+        legacy = options.get("band_style", "line")
+        line_enabled = bool(options.get("band_line", legacy != "scatter"))
+        markers_enabled = bool(options.get("band_markers", legacy in {"scatter", "cycle"}))
+        if not line_enabled and not markers_enabled:
+            raise ValueError("enable Band lines, Band markers, or both")
         for band in range(frequencies.shape[1]):
-            if options["band_style"] == "scatter":
-                axis.scatter(x, frequencies[:, band], s=float(options.get("marker_size", 4.0)) ** 2, label=f"Band {band + 1}")
-            else:
-                axis.plot(x, frequencies[:, band], linewidth=float(options.get("linewidth", 1.5)), marker="o" if options["band_style"] == "cycle" else None, markersize=float(options.get("marker_size", 4.0)), label=f"Band {band + 1}")
+            color = f"C{band % 10}"
+            if line_enabled:
+                axis.plot(x, frequencies[:, band], color=color, linewidth=float(options.get("linewidth", 1.5)), label=f"Band {band + 1}")
+            if markers_enabled:
+                axis.scatter(x, frequencies[:, band], color=color, s=float(options.get("marker_size", 4.0)) ** 2, label=f"Band {band + 1}" if not line_enabled else "_nolegend_")
         labels = summary.get("path_labels")
         if labels:
             positions = np.linspace(0, max(0, len(x) - 1), len(labels))
-            axis.set_xticks(positions, labels)
-            axis.set_xlabel(options["x_label"] or "wave-vector path")
+            axis.set_xticks(positions, [_path_label(value) for value in labels])
+            if options["x_label"]:
+                axis.set_xlabel(options["x_label"])
         else:
             axis.set_xlabel(options["x_label"] or "sample")
-        axis.set_ylabel(options["y_label"] or "frequency")
+        axis.set_ylabel(options["y_label"] or "Normalized frequency (ωa/2πc)")
     elif operation == "frequency_at_k" and "frequency" in arrays:
         axis.bar([0], arrays["frequency"])
-        axis.set_ylabel(options["y_label"] or "frequency")
+        axis.set_ylabel(options["y_label"] or "Normalized frequency (ωa/2πc)")
     elif operation in {"compute_field_observables", "fields_energy"} and "energy_density" in arrays:
         quantity = str(options.get("field_quantity", "energy_density"))
         energy = np.asarray(arrays.get(quantity, arrays["energy_density"]))
@@ -83,7 +94,6 @@ def plot_record(record_path: str | Path, style: dict[str, Any] | None = None) ->
         axis.imshow(image, origin="lower", aspect="equal")
         bands = summary.get("bands_zero_based", [selected])
         band = int(bands[selected]) + 1 if selected < len(bands) else selected + 1
-        axis.set_title(options["title"] or f"Fields / energy — Band {band} (one-based)")
         axis.set_xlabel(options["x_label"] or "unit-cell x")
         axis.set_ylabel(options["y_label"] or "unit-cell y")
     elif operation in {"solve_efs", "efs"} and "qpoints" in arrays and "frequencies" in arrays:
@@ -94,11 +104,9 @@ def plot_record(record_path: str | Path, style: dict[str, Any] | None = None) ->
             artist = axis.contourf(x_grid, y_grid, values_grid, levels=12, cmap=options.get("cmap", "viridis"))
             if options.get("colorbar", True):
                 figure.colorbar(artist, ax=axis, label="frequency")
-            axis.set_title(options["title"] or "EFS contour")
         else:
             values = np.asarray(arrays["frequencies"])[:, selected]
             axis.scatter(arrays["qpoints"][:, 0], arrays["qpoints"][:, 1], c=values, label="sparse samples")
-            axis.set_title(options["title"] or "EFS sparse samples (no iso-contour)")
         axis.set_aspect("equal", adjustable="box")
         axis.set_xlabel(options["x_label"] or "qₓ")
         axis.set_ylabel(options["y_label"] or "qᵧ")
@@ -116,7 +124,6 @@ def plot_record(record_path: str | Path, style: dict[str, Any] | None = None) ->
         else:
             axis.scatter(points[:, 0], points[:, 1], label="plaquette centers")
         axis.set_aspect("equal", adjustable="box")
-        axis.set_title(options["title"] or "Berry curvature at plaquette centers")
         axis.set_xlabel(options["x_label"] or "qₓ")
         axis.set_ylabel(options["y_label"] or "qᵧ")
     elif operation in {"compute_berry_dipole", "berry_curvature_dipole"} and "qpoints" in arrays:
@@ -130,10 +137,7 @@ def plot_record(record_path: str | Path, style: dict[str, Any] | None = None) ->
         axis.set_ylabel(options["y_label"] or "qᵧ")
     else:
         axis.text(0.5, 0.5, "No plottable arrays", ha="center", va="center")
-    if options["title"]:
-        axis.set_title(options["title"])
-    elif not axis.get_title():
-        axis.set_title(str(operation))
+    axis.set_title(str(options["title"]) if options["title"] else "")
     if options["grid"]:
         axis.grid(True)
     if options["x_limits"]:
@@ -143,8 +147,7 @@ def plot_record(record_path: str | Path, style: dict[str, Any] | None = None) ->
     if options["legend"] and axis.get_legend_handles_labels()[0]:
         axis.legend()
     axis.tick_params(labelsize=float(options.get("font_size", 10.0)))
-    figure.text(0.01, 0.01, _status_text(config, summary), fontsize=8)
-    figure.tight_layout(rect=(0, 0.03, 1, 1))
+    figure.tight_layout()
     return figure
 
 

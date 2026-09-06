@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -118,6 +118,7 @@ def solve_berry(
     branch_floor: float = 0.1,
     convergence_status: str = "NOT_ASSESSED",
     record_root: str | Path | None = None,
+    progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Compute unsymmetrized Wilson phase and curvature for each 4-point loop."""
 
@@ -132,13 +133,18 @@ def solve_berry(
     if convergence_status not in {"NOT_ASSESSED", "CONVERGED", "FAILED"}:
         raise ValueError("convergence_status must be NOT_ASSESSED, CONVERGED, or FAILED")
     unique_qpoints, inverse = _unique_points(plaquettes)
-    solved = solve_bands(model, unique_qpoints, gmax=gmax, numeig=max(numeig, max(bands) + 2), pol=pol)
+    solve_options = {"gmax": gmax, "numeig": max(numeig, max(bands) + 2), "pol": pol}
+    if progress is not None:
+        solve_options["progress"] = progress
+    solved = solve_bands(model, unique_qpoints, **solve_options)
     vectors = np.asarray(solved["eigenvectors"])
     selected = vectors[:, :, bands]
     phases: list[float] = []
     wilsons: list[dict[str, float]] = []
     qualifications: list[dict[str, Any]] = []
     covariance: list[dict[str, Any]] = []
+    if progress is not None:
+        progress({"phase": "Wilson loops", "completed": 0, "total": len(plaquettes), "message": f"Analyzing {len(plaquettes)} plaquettes"})
     for index, plaquette in enumerate(plaquettes):
         point_indices = inverse[index * 4:(index + 1) * 4]
         loop = [selected[point, :, :] for point in point_indices]
@@ -150,6 +156,8 @@ def solve_berry(
         wilsons.append(wilson)
         qualifications.append(qualification)
         covariance.append(_loop_covariance(solved, plaquette, model, pol))
+        if progress is not None:
+            progress({"phase": "Wilson loops", "completed": index + 1, "total": len(plaquettes), "message": f"Analyzed plaquette {index + 1}/{len(plaquettes)}"})
     phases_array = np.asarray(phases, dtype=float)
     curvature = phases_array / areas
     qualified = np.asarray([item["qualified"] for item in qualifications], dtype=bool)
