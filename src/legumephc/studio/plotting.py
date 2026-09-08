@@ -12,6 +12,7 @@ from scipy.spatial import Voronoi
 
 from ..geometry import first_bz_vertices
 from .profile import model_from_case
+from ..units import frequency_factor, frequency_label
 
 
 def _clip_half_plane(polygon: np.ndarray, normal: np.ndarray, limit: float, *, tolerance: float = 1e-12) -> np.ndarray:
@@ -72,7 +73,7 @@ def sample_cell_polygons(points: np.ndarray, domain_outline: np.ndarray) -> list
 
 
 def default_plot_style() -> dict[str, Any]:
-    return {"width_px": 900, "height_px": 600, "dpi": 100, "title": "", "x_label": "", "y_label": "", "grid": True, "legend": True, "x_limits": None, "y_limits": None, "band_style": "line", "band_line": True, "band_markers": False, "linewidth": 1.5, "marker_size": 4.0, "cmap": "RdBu_r", "berry_coloring": True, "berry_render_mode": "sample_cells", "show_sample_centers": False, "berry_interpolation": False, "berry_vmin": None, "berry_vmax": None, "colorbar": True, "component_index": 0, "field_quantity": "energy_density", "font_size": 10.0}
+    return {"width_px": 900, "height_px": 600, "dpi": 100, "title": "", "x_label": "", "y_label": "", "grid": True, "legend": True, "x_limits": None, "y_limits": None, "band_style": "line", "band_line": True, "band_markers": False, "linewidth": 1.5, "marker_size": 4.0, "cmap": "RdBu_r", "berry_coloring": True, "berry_render_mode": "sample_cells", "show_sample_centers": False, "berry_interpolation": False, "berry_vmin": None, "berry_vmax": None, "colorbar": True, "component_index": 0, "field_quantity": "energy_density", "font_size": 10.0, "frequency_unit": "Normalized"}
 
 
 def _berry_norm(values: np.ndarray, options: dict[str, Any]) -> Normalize:
@@ -134,6 +135,16 @@ def plot_record(record_path: str | Path, style: dict[str, Any] | None = None) ->
     figure = Figure(figsize=(float(options["width_px"]) / float(options["dpi"]), float(options["height_px"]) / float(options["dpi"])), dpi=float(options["dpi"]))
     axis = figure.add_subplot(111)
     operation = config.get("identity", {}).get("operation", summary.get("operation", "result"))
+    unit = options.get("frequency_unit", "Normalized")
+    factor = 1.0
+    if operation in {"solve_bands", "band_structure", "frequency_at_k", "solve_efs", "efs"}:
+        saved = config.get("config", {})
+        length = saved.get("case", {}).get("actual_lattice_constant_m", saved.get("actual_lattice_constant_m"))
+        factor = frequency_factor(unit, length)
+        arrays = dict(arrays)
+        for key in ("frequencies", "frequency"):
+            if key in arrays:
+                arrays[key] = np.asarray(arrays[key]) * factor
     if operation in {"solve_bands", "band_structure"} and "frequencies" in arrays:
         frequencies = np.asarray(arrays["frequencies"])
         x = np.arange(frequencies.shape[0])
@@ -156,10 +167,10 @@ def plot_record(record_path: str | Path, style: dict[str, Any] | None = None) ->
                 axis.set_xlabel(options["x_label"])
         else:
             axis.set_xlabel(options["x_label"] or "sample")
-        axis.set_ylabel(options["y_label"] or "Normalized frequency (ωa/2πc)")
+        axis.set_ylabel(options["y_label"] or frequency_label(unit))
     elif operation == "frequency_at_k" and "frequency" in arrays:
         axis.bar([0], arrays["frequency"])
-        axis.set_ylabel(options["y_label"] or "Normalized frequency (ωa/2πc)")
+        axis.set_ylabel(options["y_label"] or frequency_label(unit))
     elif operation in {"compute_field_observables", "fields_energy"} and "energy_density" in arrays:
         quantity = str(options.get("field_quantity", "energy_density"))
         energy = np.asarray(arrays.get(quantity, arrays["energy_density"]))
@@ -176,9 +187,16 @@ def plot_record(record_path: str | Path, style: dict[str, Any] | None = None) ->
         grid = _grid_arrays(arrays, summary, selected)
         if grid is not None:
             x_grid, y_grid, values_grid = grid
-            artist = axis.contourf(x_grid, y_grid, values_grid, levels=12, cmap=options.get("cmap", "viridis"))
+            levels = options.get("efs_levels")
+            if levels is not None:
+                levels = np.asarray(levels, dtype=float)
+                if len(levels) < 1 or not np.isfinite(levels).all() or np.any(np.diff(levels) <= 0):
+                    raise ValueError("EFS levels must be finite and strictly increasing")
+                artist = axis.contour(x_grid, y_grid, values_grid, levels=levels, cmap=options.get("cmap", "viridis"))
+            else:
+                artist = axis.contourf(x_grid, y_grid, values_grid, levels=12, cmap=options.get("cmap", "viridis"))
             if options.get("colorbar", True):
-                figure.colorbar(artist, ax=axis, label="frequency")
+                figure.colorbar(artist, ax=axis, label=frequency_label(unit))
         else:
             values = np.asarray(arrays["frequencies"])[:, selected]
             axis.scatter(arrays["qpoints"][:, 0], arrays["qpoints"][:, 1], c=values, label="sparse samples")

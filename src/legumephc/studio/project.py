@@ -84,6 +84,7 @@ def new_project(name: str = "Untitled") -> dict[str, Any]:
             "name": "TriangularCircle",
             "lattice": "triangular",
             "lattice_constant": 1.0,
+            "actual_lattice_constant_m": 400e-9,
             "direct_basis": [[0.5, 0.5], [0.8660254037844386, -0.8660254037844386]],
             "geometry": {
                 "name": "TriangularCircle",
@@ -166,7 +167,7 @@ def new_project(name: str = "Untitled") -> dict[str, Any]:
         "selected_node": {"kind": "calculation", "id": "calc-1"},
         "selected_result": None,
         "plot": plot,
-        "ui_state": {"material_representation": "epsilon", "advanced_expanded": False, "active_geometry_tab": "Motif", "selected_motif": "motif-1"},
+        "ui_state": {"material_representation": "n", "advanced_expanded": False, "active_geometry_tab": "Motif", "selected_motif": "motif-1"},
     })
     return project
 

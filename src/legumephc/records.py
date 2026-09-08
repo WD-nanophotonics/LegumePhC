@@ -55,4 +55,5 @@ def create_model_record(root, model, operation: str, config: dict, summary: dict
         "solver": "Legume.PlaneWaveExp",
         "operation": operation,
     }
+    config = {**config, "actual_lattice_constant_m": model.actual_lattice_constant_m}
     return create_record(root, identity=identity, config=config, summary=summary, arrays=arrays)

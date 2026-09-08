@@ -13,6 +13,8 @@ import numpy as np
 from .plotting import default_plot_style, export_figure, plot_record
 from .preview import preview_geometry
 from .profile import model_from_case
+from .sites_editor import SitesDialog, number_text
+from ..units import reference_length, frequency_factor, LENGTH_UNITS
 from .geometry_editor import (
     SHAPE_CHOICES,
     canonical_shape,
@@ -87,102 +89,6 @@ def _dialog_location(app: "StudioApp", kind: str, *, saving: bool = False, recor
     if saving:
         directory.mkdir(parents=True, exist_ok=True)
     return str(directory), filename
-
-
-class MotifDialog(tk.Toplevel):
-    """One structured editor for a motif; no geometry syntax is typed by hand."""
-
-    def __init__(self, parent: tk.Misc, *, motif: dict[str, Any], representation: str, title: str):
-        super().__init__(parent)
-        self.title(title)
-        self.transient(parent)
-        self.resizable(False, False)
-        self.result: dict[str, Any] | None = None
-        self.representation = representation
-        self._initial_shape = shape_choice(str(motif.get("kind", "circle")), motif.get("sides"))
-        self._initial_name = str(motif.get("name", ""))
-        center = motif.get("center", [0.0, 0.0])
-        self.variables = {
-            "name": tk.StringVar(self, str(motif.get("name", ""))),
-            "shape": tk.StringVar(self, self._initial_shape),
-            "radius": tk.StringVar(self, str(motif.get("radius", 0.2))),
-            "center_x": tk.StringVar(self, str(center[0])),
-            "center_y": tk.StringVar(self, str(center[1])),
-            "material": tk.StringVar(self, str(editor_value(float(motif.get("epsilon", 1.0)), representation))),
-            "sides": tk.StringVar(self, str(motif.get("sides", 6))),
-            "angle": tk.StringVar(self, str(motif.get("angle_degrees", 0.0))),
-        }
-        body = ttk.Frame(self, padding=10)
-        body.grid(sticky="nsew")
-        ttk.Label(body, text="Shape").grid(row=0, column=0, sticky="w", pady=3)
-        self.shape_menu = ttk.Combobox(body, textvariable=self.variables["shape"], values=SHAPE_CHOICES, state="readonly", width=20)
-        self.shape_menu.grid(row=0, column=1, sticky="ew", pady=3)
-        self.shape_menu.bind("<<ComboboxSelected>>", lambda _event: self._shape_changed())
-        labels = (
-            ("Name (optional)", "name"),
-            ("Radius / circumradius r/a", "radius"),
-            ("Center x/a", "center_x"),
-            ("Center y/a", "center_y"),
-            ("Refractive index n" if representation == "n" else "Epsilon ε", "material"),
-            ("Polygon sides", "sides"),
-            ("Rotation (deg)", "angle"),
-        )
-        self.entries: dict[str, ttk.Entry] = {}
-        for row, (label, name) in enumerate(labels, start=1):
-            ttk.Label(body, text=label).grid(row=row, column=0, sticky="w", pady=3)
-            entry = ttk.Entry(body, textvariable=self.variables[name], width=22)
-            entry.grid(row=row, column=1, sticky="ew", pady=3)
-            self.entries[name] = entry
-        self.error = ttk.Label(body, text="", foreground="#b00020", wraplength=330)
-        self.error.grid(row=8, column=0, columnspan=2, sticky="w", pady=(5, 2))
-        buttons = ttk.Frame(body)
-        buttons.grid(row=9, column=0, columnspan=2, sticky="e", pady=(8, 0))
-        ttk.Button(buttons, text="Cancel", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="Apply", command=self._apply).pack(side="right", padx=(0, 6))
-        self.bind("<Return>", lambda _event: self._apply())
-        self.bind("<Escape>", lambda _event: self.destroy())
-        self.protocol("WM_DELETE_WINDOW", self.destroy)
-        self._shape_changed()
-        self.grab_set()
-        self.wait_visibility()
-        self.focus_set()
-
-    def _shape_changed(self) -> None:
-        choice = self.variables["shape"].get()
-        regular = choice == "Regular polygon"
-        circle = choice == "Circle"
-        self.entries["sides"].configure(state="normal" if regular else "disabled")
-        self.entries["angle"].configure(state="disabled" if circle else "normal")
-        if choice == "Triangle":
-            self.variables["sides"].set("3")
-        elif choice == "Square":
-            self.variables["sides"].set("4")
-
-    def _apply(self) -> None:
-        try:
-            kind, sides = canonical_shape(self.variables["shape"].get(), self.variables["sides"].get())
-            radius = safe_number(self.variables["radius"].get())
-            if radius <= 0:
-                raise ValueError("radius must be positive")
-            center = [safe_number(self.variables["center_x"].get()), safe_number(self.variables["center_y"].get())]
-            epsilon = epsilon_from_editor(self.variables["material"].get(), self.representation)
-            angle = 0.0 if kind == "circle" else safe_number(self.variables["angle"].get())
-            default_name = self.variables["shape"].get().replace(" ", "")
-            entered_name = self.variables["name"].get().strip()
-            generated_before = not entered_name or entered_name.lower().endswith(self._initial_shape.replace(" ", "").lower())
-            self.result = {
-                "name": default_name if generated_before else entered_name,
-                "kind": kind,
-                "radius": radius,
-                "center": center,
-                "epsilon": epsilon,
-                "sides": sides,
-                "angle_degrees": angle,
-            }
-        except (ValueError, TypeError) as exc:
-            self.error.configure(text=str(exc))
-            return
-        self.destroy()
 
 
 class BerryCentersDialog(tk.Toplevel):
@@ -356,6 +262,8 @@ class StudioApp(tk.Tk):
         )
 
     def _var(self, name: str, value: Any = "") -> tk.Variable:
+        if name in self._vars:
+            return self._vars[name]
         variable = tk.StringVar(self, str(value))
         self._vars[name] = variable
         return variable
@@ -380,7 +288,10 @@ class StudioApp(tk.Tk):
         self.lattice_menu = ttk.Combobox(controls, textvariable=self._var("lattice"), values=("triangular", "square", "custom"), state="readonly", width=13)
         self.lattice_menu.grid(row=0, column=1, padx=4, pady=2)
         self.lattice_menu.bind("<<ComboboxSelected>>", lambda _event: self._lattice_changed())
-        self._label_entry(controls, 1, "Lattice constant a", "lattice_constant")
+        self._label_entry(controls, 1, "Actual lattice constant", "actual_length")
+        length_menu = ttk.Combobox(controls, textvariable=self._var("length_unit"), values=("nm", "μm", "m"), state="readonly", width=5)
+        length_menu.grid(row=1, column=2)
+        length_menu.bind("<<ComboboxSelected>>", self._length_unit_changed)
         ttk.Label(controls, text="Direct basis").grid(row=2, column=0, sticky="w", padx=4, pady=2)
         self.basis_summary = ttk.Label(controls, text="automatic for lattice", wraplength=190)
         self.basis_summary.grid(row=2, column=1, sticky="w", padx=4, pady=2)
@@ -399,10 +310,7 @@ class StudioApp(tk.Tk):
         self.motif_tree.bind("<Double-1>", lambda _event: self._edit_motif())
         motif_buttons = ttk.Frame(controls)
         motif_buttons.grid(row=7, column=0, columnspan=2, sticky="ew", padx=4, pady=2)
-        ttk.Button(motif_buttons, text="Add", command=self._add_motif).pack(side="left")
-        ttk.Button(motif_buttons, text="Edit", command=self._edit_motif).pack(side="left", padx=2)
-        ttk.Button(motif_buttons, text="Center in cell", command=self._center_motif).pack(side="left", padx=2)
-        ttk.Button(motif_buttons, text="Remove", command=self._remove_motif).pack(side="left")
+        ttk.Button(motif_buttons, text="Edit sites…", command=self._edit_motif).pack(side="left", padx=2)
         ttk.Label(controls, text="Deformation").grid(row=8, column=0, sticky="w", padx=4, pady=(8, 2))
         self.deformation_menu = ttk.Combobox(controls, textvariable=self._var("deformation_kind"), values=("none", "uniaxial", "custom"), state="readonly", width=13)
         self.deformation_menu.grid(row=8, column=1, sticky="w", padx=4, pady=2)
@@ -422,12 +330,25 @@ class StudioApp(tk.Tk):
             self._label_entry(self.advanced_frame, row, name, name)
         self._label_entry(self.advanced_frame, 8, "translation dx/a", "tx")
         self._label_entry(self.advanced_frame, 9, "translation dy/a", "ty")
+        self._label_entry(self.advanced_frame, 11, "Geometry scale (dimensionless)", "lattice_constant")
         ttk.Label(self.advanced_frame, text="translation moves motifs only; lattice unchanged", wraplength=190).grid(row=10, column=0, columnspan=2, padx=4, pady=2)
         self.preview_status = ttk.Label(controls, text="Pending Refresh")
         self.preview_status.grid(row=12, column=0, columnspan=2, sticky="w", padx=4)
         self.geometry_refresh_button = ttk.Button(controls, text="Refresh Geometry", command=self._refresh_preview)
         self.geometry_refresh_button.grid(row=13, column=0, columnspan=2, sticky="ew", padx=4, pady=6)
         self._build_geometry_views()
+
+    def _length_unit_changed(self, *_args):
+        old = getattr(self, "_previous_length_unit", "nm")
+        new = self._vars["length_unit"].get()
+        text = self._vars["actual_length"].get().strip()
+        try:
+            if text:
+                self._vars["actual_length"].set(number_text(reference_length(text, old) / LENGTH_UNITS[new]))
+            self._previous_length_unit = new
+        except ValueError as exc:
+            self._vars["length_unit"].set(old)
+            messagebox.showerror("Actual lattice constant", str(exc), parent=self)
 
     def _lattice_changed(self) -> None:
         lattice = self._vars["lattice"].get()
@@ -635,15 +556,21 @@ class StudioApp(tk.Tk):
     def _build_results_tab(self) -> None:
         frame = ttk.Frame(self.results_tab)
         frame.pack(fill="both", expand=True, padx=6, pady=6)
-        self.result_list = tk.Listbox(frame, height=12)
+        ttk.Label(frame, text="Results by calculation").pack(anchor="w")
+        self.result_list = ttk.Treeview(frame, show="tree", height=12)
         self.result_list.pack(side="left", fill="both", expand=True)
         self.result_list.bind("<<ListboxSelect>>", lambda _event: self._select_result())
+        self.result_list.bind("<<TreeviewSelect>>", lambda _event: self._select_result())
         buttons = ttk.Frame(frame)
         buttons.pack(side="left", fill="y", padx=6)
         ttk.Button(buttons, text="Refresh", command=self._populate_results).pack(fill="x", pady=2)
         ttk.Button(buttons, text="Plot selected", command=self._plot_selected).pack(fill="x", pady=2)
         self.result_status = ttk.Label(buttons, text="No result selected", wraplength=220)
         self.result_status.pack(anchor="w", pady=8)
+        ttk.Label(buttons, text="Frequency units").pack(anchor="w", pady=(12, 2))
+        unit_menu = ttk.Combobox(buttons, textvariable=self._var("frequency_unit"), values=("Normalized", "GHz", "THz"), state="readonly", width=16)
+        unit_menu.pack(fill="x")
+        unit_menu.bind("<<ComboboxSelected>>", self._frequency_unit_changed)
 
     def _build_style_tab(self) -> None:
         controls = ttk.LabelFrame(self.style_tab, text="Figure style")
@@ -670,6 +597,15 @@ class StudioApp(tk.Tk):
         self._label_entry(controls, 21, "Berry vmax", "berry_vmax", 12)
         self._style_widgets["berry_vmin"] = self._field_widgets.pop("berry_vmin")
         self._style_widgets["berry_vmax"] = self._field_widgets.pop("berry_vmax")
+        label = ttk.Label(controls, text="Frequency units")
+        label.grid(row=25, column=0)
+        menu = ttk.Combobox(controls, textvariable=self._var("frequency_unit"), values=("Normalized", "GHz", "THz"), state="readonly")
+        menu.grid(row=25, column=1)
+        menu.bind("<<ComboboxSelected>>", self._frequency_unit_changed)
+        self._style_widgets["frequency_unit"] = [label, menu]
+        self._label_entry(controls, 26, "EFS levels (comma separated)", "efs_levels")
+        self._style_widgets["efs_levels"] = self._field_widgets.pop("efs_levels")
+        self._vars["frequency_unit"].trace_add("write", self._mark_style_pending)
         for name in ("width_px", "height_px", "dpi", "title", "x_label", "y_label", "x_limits", "y_limits", "linewidth", "marker_size", "cmap", "component_index"):
             self._style_widgets[name] = self._field_widgets.pop(name)
         ttk.Button(controls, text="Apply to Current Plot", command=self._apply_plot_style).grid(row=22, column=0, columnspan=2, sticky="ew", padx=4, pady=(8, 2))
@@ -678,6 +614,33 @@ class StudioApp(tk.Tk):
         ttk.Button(controls, text="Export current plot…", command=self._export).grid(row=24, column=0, columnspan=2, sticky="ew", padx=4, pady=6)
         operation_var = self._vars.get("operation")
         self._update_style_visibility(operation_var.get() if operation_var is not None else "frequency_at_k")
+
+    def _frequency_unit_changed(self, *_args):
+        old = self.project["plot"].get("frequency_unit", "Normalized")
+        new = self._vars["frequency_unit"].get()
+        old = {"normalized": "Normalized", "Hz": "GHz", "Normalized frequency": "Normalized"}.get(old, old)
+        new = {"normalized": "Normalized", "Hz": "GHz", "Normalized frequency": "Normalized"}.get(new, new)
+        try:
+            selected = self.project.get("selected_result")
+            length = None if selected else self.project["case"].get("actual_lattice_constant_m")
+            if selected:
+                directory = self.project_path.parent if self.project_path else ROOT
+                saved = json.loads((directory / selected / "config.json").read_text(encoding="utf-8"))["config"]
+                length = saved.get("case", {}).get("actual_lattice_constant_m", saved.get("actual_lattice_constant_m"))
+            ratio = frequency_factor(new, length) / frequency_factor(old, length)
+            for key in ("efs_levels", "y_limits"):
+                if key == "y_limits" and self._vars["operation"].get() not in {"band_structure", "frequency_at_k"}:
+                    continue
+                raw = self._vars[key].get().strip()
+                if raw:
+                    self._vars[key].set(",".join(str(float(v)*ratio) for v in raw.split(",")))
+            self.project["plot"]["frequency_unit"] = new
+            selected_result = next((item for item in self.project.get("results", []) if item.get("record_reference", {}).get("path") == selected), None)
+            if selected_result is not None:
+                selected_result.setdefault("plot", {})["frequency_unit"] = new
+        except (ValueError, OSError, KeyError) as exc:
+            self._vars["frequency_unit"].set(old)
+            messagebox.showerror("Frequency units", str(exc), parent=self)
 
     def _style_bool(self, parent, row: int, label: str, name: str) -> None:
         variable = self._bool_var(name)
@@ -696,6 +659,10 @@ class StudioApp(tk.Tk):
             "compute_berry_dipole": {"component_index", "cmap", "colorbar"}, "berry_curvature_dipole": {"component_index", "cmap", "colorbar"},
         }.get(operation, set())
         visible = public | specific
+        if operation in {"solve_bands", "band_structure", "frequency_at_k", "solve_efs", "efs"}:
+            visible.add("frequency_unit")
+        if operation in {"solve_efs", "efs"}:
+            visible.add("efs_levels")
         for name, widgets in self._style_widgets.items():
             for widget in widgets:
                 (widget.grid if name in visible else widget.grid_remove)()
@@ -715,10 +682,13 @@ class StudioApp(tk.Tk):
         linear = deformation.get("linear", case.get("affine", {}).get("linear", [[1.0, 0.0], [0.0, 1.0]]))
         translation = deformation.get("translation", case.get("affine", {}).get("translation", [0.0, 0.0]))
         ui_state = self.project.setdefault("ui_state", {})
+        self._previous_length_unit = "nm"
         values = {
             "lattice": case["lattice"], "lattice_constant": case.get("lattice_constant", 1.0),
-            "material_representation": ui_state.get("material_representation", "epsilon"),
-            "background_material": editor_value(geometry.get("epsilon_background", 7.29), ui_state.get("material_representation", "epsilon")),
+            "material_representation": ui_state.get("material_representation", "n"),
+            "background_material": editor_value(geometry.get("epsilon_background", 7.29), ui_state.get("material_representation", "n")),
+            "actual_length": "" if case.get("actual_lattice_constant_m") is None else number_text(case["actual_lattice_constant_m"] / 1e-9),
+            "length_unit": "nm", "frequency_unit": self.project["plot"].get("frequency_unit", "Normalized"),
             "deformation_kind": deformation.get("kind", "none"), "deformation_factor": deformation.get("factor", 1.0),
             "deformation_angle": deformation.get("angle_degrees", 0.0), "b11": basis[0][0], "b12": basis[0][1],
             "b21": basis[1][0], "b22": basis[1][1], "a11": linear[0][0], "a12": linear[0][1],
@@ -730,6 +700,7 @@ class StudioApp(tk.Tk):
         sampling_mode = calculation.get("sampling_mode", "single_plaquette")
         values.update({"operation": calculation["operation"], "qx": calculation["qpoint"][0], "qy": calculation["qpoint"][1], "band": calculation["band_one_based"], "composite": ",".join(map(str, calculation["composite_bands_one_based"])), "berry_target": BERRY_TARGET_LABELS.get(target_mode, target_mode), "berry_first": calculation.get("berry_first_band", min(calculation.get("composite_bands_one_based", [2]))), "berry_last": calculation.get("berry_last_band", max(calculation.get("composite_bands_one_based", [2, 3]))), "gmax": calculation["gmax"], "numeig": calculation["numeig"], "polarization": calculation["polarization"], "field_grid": calculation["grid_size"], "efs_grid": calculation["efs_grid_size"], "berry_step": calculation["berry_step"], "samples": calculation.get("samples_per_segment", 16), "berry_sampling": BERRY_SAMPLING_LABELS.get(sampling_mode, sampling_mode), "berry_grid": calculation.get("grid_size", 3), "source_result": calculation.get("berry_record_path", ""), "response_weights": ",".join(map(str, calculation.get("response_weights") or []))})
         values.update(self.project["plot"])
+        values["efs_levels"] = _control_text(self.project["plot"].get("efs_levels"))
         values["berry_render_mode"] = BERRY_RENDER_LABELS.get(values.get("berry_render_mode", "sample_cells"), values.get("berry_render_mode"))
         for name in ("x_limits", "y_limits"):
             values[name] = _control_text(values.get(name))
@@ -765,8 +736,10 @@ class StudioApp(tk.Tk):
         for calculation in self.project.get("calculations", []):
             self.tree.insert(calcs_node, "end", iid=calculation["id"], text=f"{calculation.get('name', calculation['id'])} · {calculation['operation']}")
         results_node = self.tree.insert("", "end", iid="results", text="Results", open=True)
-        for result in self.project.get("results", []):
-            self.tree.insert(results_node, "end", iid=result.get("id", result.get("record_reference", {}).get("path", "result")), text=result.get("record_reference", {}).get("path", "Result"))
+        for operation, results in self._grouped_results().items():
+            group = self.tree.insert(results_node, "end", iid=f"result-group-{operation}", text=self._operation_label(operation), open=True)
+            for result in results:
+                self.tree.insert(group, "end", iid=result.get("id", "result"), text=self._result_label(result))
         selected = self.project.get("selected_node", {}).get("id")
         if selected and self.tree.exists(selected):
             self.tree.selection_set(selected)
@@ -866,13 +839,14 @@ class StudioApp(tk.Tk):
 
         case["lattice"] = self._vars["lattice"].get()
         case["lattice_constant"] = safe_number(self._vars["lattice_constant"].get())
+        case["actual_lattice_constant_m"] = reference_length(value("actual_length", ""), value("length_unit", "nm"))
         if case["lattice"] == "custom":
             case["direct_basis"] = [[safe_number(self._vars["b11"].get()), safe_number(self._vars["b12"].get())], [safe_number(self._vars["b21"].get()), safe_number(self._vars["b22"].get())]]
         elif case["lattice"] == "triangular":
             case["direct_basis"] = [[0.5, 0.5], [3.0 ** 0.5 / 2.0, -3.0 ** 0.5 / 2.0]]
         else:
             case["direct_basis"] = [[1.0, 0.0], [0.0, 1.0]]
-        representation = value("material_representation", "epsilon")
+        representation = value("material_representation", "n")
         geometry = {**case["geometry"], "epsilon_background": epsilon_from_editor(value("background_material", case["geometry"].get("epsilon_background", 7.29)), representation)}
         motifs = []
         for item in self.motif_tree.get_children():
@@ -913,7 +887,7 @@ class StudioApp(tk.Tk):
         self.motif_tree.delete(*self.motif_tree.get_children())
         geometry = self.project["case"]["geometry"]
         motifs = geometry.get("motifs") or [geometry]
-        representation = self.project.get("ui_state", {}).get("material_representation", "epsilon")
+        representation = self.project.get("ui_state", {}).get("material_representation", "n")
         for index, motif in enumerate(motifs):
             epsilon = motif.get("epsilon", geometry.get("epsilon_inclusion", 1.0))
             self.motif_tree.insert("", "end", iid=f"motif-{index + 1}", values=(motif.get("name", f"motif-{index + 1}"), motif.get("kind", "circle"), motif.get("radius", 0.2), json.dumps(motif.get("center", [0.5, 0.5])), editor_value(epsilon, representation), motif.get("sides", 8), motif.get("angle_degrees", 0.0)))
@@ -924,50 +898,25 @@ class StudioApp(tk.Tk):
             self.motif_tree.selection_set(self.motif_tree.get_children()[0])
 
     def _add_motif(self) -> None:
-        index = len(self.motif_tree.get_children()) + 1
-        representation = self._vars["material_representation"].get()
-        dialog = MotifDialog(
-            self,
-            motif={"name": f"Circle {index}", "kind": "circle", "radius": 0.2, "center": self._current_cell_center().tolist(), "epsilon": 1.0, "sides": 6, "angle_degrees": 0.0},
-            representation=representation,
-            title="Add motif",
-        )
-        self.wait_window(dialog)
-        if dialog.result is None:
-            return
-        item = f"motif-{index}"
-        self._set_motif_row(item, dialog.result, insert=True)
-        self.motif_tree.selection_set(item)
-        self._mark_pending()
-        self._refresh_preview()
+        self._edit_motif(add=True)
 
-    def _edit_motif(self) -> None:
-        selection = self.motif_tree.selection()
-        if not selection:
-            return
-        item = selection[0]
-        name, kind, radius, center, material, sides, angle = self.motif_tree.item(item, "values")
-        representation = self._vars["material_representation"].get()
-        dialog = MotifDialog(
-            self,
-            motif={
-                "name": name,
-                "kind": kind,
-                "radius": safe_number(radius),
-                "center": [safe_number(value) for value in json.loads(center)],
-                "epsilon": epsilon_from_editor(material, representation),
-                "sides": int(safe_number(sides or 6)),
-                "angle_degrees": safe_number(angle or 0.0),
-            },
-            representation=representation,
-            title="Edit motif",
-        )
-        self.wait_window(dialog)
-        if dialog.result is None:
-            return
-        self._set_motif_row(item, dialog.result)
-        self._mark_pending()
-        self._refresh_preview()
+    def _edit_motif(self, add=False) -> None:
+        try:
+            case = self._case_from_controls()
+            dialog = SitesDialog(self, motifs=case["geometry"]["motifs"],
+                representation=self._vars["material_representation"].get(),
+                lattice=case["lattice"], center=self._current_cell_center(),
+                scale=case["lattice_constant"], add=add)
+            self.wait_window(dialog)
+            if dialog.result is None:
+                return
+            self.motif_tree.delete(*self.motif_tree.get_children())
+            for index, motif in enumerate(dialog.result):
+                self._set_motif_row(f"motif-{index+1}", motif, insert=True)
+            self._mark_pending()
+            self._refresh_preview()
+        except (ValueError, TypeError) as exc:
+            messagebox.showerror("Edit sites", str(exc), parent=self)
 
     def _set_motif_row(self, item: str, motif: dict[str, Any], *, insert: bool = False) -> None:
         representation = self._vars["material_representation"].get()
@@ -1054,6 +1003,9 @@ class StudioApp(tk.Tk):
         self._selected_calculation_entry()["operation"] = self._selected_calculation_entry()["parameters"]["operation"]
         raw_render = self._vars["berry_render_mode"].get()
         render_mode = BERRY_RENDER_VALUES.get(raw_render, raw_render)
+        self.project["plot"]["frequency_unit"] = self._vars["frequency_unit"].get() or "Normalized"
+        raw_levels = self._vars["efs_levels"].get().strip()
+        self.project["plot"]["efs_levels"] = [float(v) for v in raw_levels.split(",")] if raw_levels else None
         self.project["plot"].update({"width_px": int(float(self._vars["width_px"].get())), "height_px": int(float(self._vars["height_px"].get())), "dpi": int(float(self._vars["dpi"].get())), "title": self._vars["title"].get(), "x_label": self._vars["x_label"].get(), "y_label": self._vars["y_label"].get(), "linewidth": float(self._vars["linewidth"].get()), "marker_size": float(self._vars["marker_size"].get()), "cmap": self._vars["cmap"].get(), "component_index": int(float(self._vars["component_index"].get())), "field_quantity": self._vars["field_quantity"].get(), "berry_coloring": True, "berry_render_mode": render_mode, "show_sample_centers": bool(self._vars["show_sample_centers"].get()), "berry_interpolation": render_mode == "linear_interpolation", "colorbar": bool(self._vars["colorbar"].get())})
         for name in ("grid", "legend", "band_line", "band_markers"):
             if name in self._vars:
@@ -1385,23 +1337,62 @@ class StudioApp(tk.Tk):
     def _populate_results(self) -> None:
         if not hasattr(self, "result_list"):
             return
-        self.result_list.delete(0, tk.END)
+        for item in self.result_list.get_children():
+            self.result_list.delete(item)
         project_dir = self.project_path.parent if self.project_path else ROOT
-        for reference in self.project.get("records", []):
-            available, reason = record_available(project_dir, reference)
-            operation = reference.get("identity", {}).get("operation", "unknown")
-            label = f"{'AVAILABLE' if available else 'UNAVAILABLE'} [{operation}]: {reference.get('path', '?')}"
-            self.result_list.insert(tk.END, label)
-            reference["_availability"] = reason
+        for operation, results in self._grouped_results().items():
+            group = self.result_list.insert("", "end", iid=f"result-group-{operation}", text=self._operation_label(operation), open=True)
+            for result in results:
+                reference = result.get("record_reference", {})
+                available, reason = record_available(project_dir, reference)
+                reference["_availability"] = reason
+                result["_available"] = available
+                self.result_list.insert(group, "end", iid=result.get("id", "result"), text=self._result_label(result, available))
+
+    @staticmethod
+    def _operation_label(operation: str) -> str:
+        return {"band_structure":"Band Structure", "berry":"Berry Curvature", "efs":"EFS", "fields_energy":"Fields", "frequency_at_k":"Frequency at k", "berry_curvature_dipole":"Berry Curvature Dipole"}.get(operation, operation.replace("_", " ").title())
+
+    def _grouped_results(self) -> dict[str, list[dict[str, Any]]]:
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for result in self.project.get("results", []):
+            operation = result.get("calculation_snapshot", {}).get("operation") or self._record_operation(result.get("record_reference", {}))
+            operation = {"solve_bands":"band_structure", "solve_berry":"berry", "solve_efs":"efs", "compute_field_observables":"fields_energy", "compute_berry_dipole":"berry_curvature_dipole"}.get(operation, operation)
+            groups.setdefault(operation, []).append(result)
+        return groups
+
+    def _result_label(self, result: dict[str, Any], available: bool | None = None) -> str:
+        snapshot = result.get("calculation_snapshot", {})
+        operation = snapshot.get("operation", "result")
+        stamp = result.get("record_reference", {}).get("created_at", "")
+        if not stamp:
+            stamp = result.get("record_reference", {}).get("path", "").split("/")[-1][:19]
+        details = []
+        if operation in {"band_structure", "solve_bands"}:
+            details.append(f"gmax={snapshot.get('gmax', '?')}")
+        elif operation in {"berry", "solve_berry"}:
+            details.append(f"target={snapshot.get('band_one_based', snapshot.get('composite_bands_one_based', '?'))}")
+        elif operation in {"efs", "solve_efs"}:
+            details.append(f"grid={snapshot.get('efs_grid_size', snapshot.get('grid_size', '?'))}")
+        status = "available" if available is not False else "unavailable"
+        return f"{stamp} · {', '.join(details) or 'record'} · {status}"
 
     def _select_result(self) -> None:
-        selected = self.result_list.curselection()
-        if not selected:
+        selection = self.result_list.selection()
+        if not selection or selection[0].startswith("result-group-"):
             return
-        reference = self.project["records"][selected[0]]
-        self.project["selected_result"] = reference["path"]
-        self.result_status.configure(text=reference.get("_availability", "selected"))
+        result = next((item for item in self.project.get("results", []) if item.get("id") == selection[0]), None)
+        if result is None:
+            return
+        reference = result.get("record_reference", {})
+        self.project["selected_result"] = reference.get("path")
+        self.project["selected_node"] = {"kind": "result", "id": result.get("id")}
+        if result.get("plot", {}).get("frequency_unit"):
+            self._vars["frequency_unit"].set(result["plot"]["frequency_unit"])
+        self.result_status.configure(text=self._result_label(result, result.get("_available", True)))
         self._update_style_visibility(self._record_operation(reference))
+        self.side_notebook.select(self.result_side)
+        self._plot_selected(skip_select=True)
 
     def _record_operation(self, reference: dict[str, Any]) -> str:
         project_dir = self.project_path.parent if self.project_path else ROOT
@@ -1411,8 +1402,9 @@ class StudioApp(tk.Tk):
         except (OSError, ValueError, KeyError, json.JSONDecodeError):
             return reference.get("identity", {}).get("operation", "result")
 
-    def _plot_selected(self) -> None:
-        self._select_result()
+    def _plot_selected(self, skip_select=False) -> None:
+        if not skip_select:
+            self._select_result()
         selected = self.project.get("selected_result")
         if not selected:
             return
@@ -1421,7 +1413,13 @@ class StudioApp(tk.Tk):
         if reference is None or not record_available(project_dir, reference)[0]:
             self.result_status.configure(text="Selected record is unavailable or has a mismatched identity")
             return
-        self.figure = plot_record(project_dir / selected, self.project["plot"])
+        try:
+            result_style = next((item.get("plot", {}) for item in self.project.get("results", []) if item.get("record_reference", {}).get("path") == selected), {})
+            self.figure = plot_record(project_dir / selected, {**self.project["plot"], **result_style})
+        except ValueError as exc:
+            self.result_status.configure(text=str(exc))
+            self.side_result_status.configure(text=str(exc))
+            return
         try:
             self.side_result_status.configure(text=self._result_summary(project_dir / selected))
         except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
@@ -1467,6 +1465,12 @@ class StudioApp(tk.Tk):
     def _apply_plot_style(self) -> None:
         try:
             self._sync()
+            selected = self.project.get("selected_result")
+            if selected:
+                for item in self.project.get("results", []):
+                    if item.get("record_reference", {}).get("path") == selected:
+                        item["plot"] = json.loads(json.dumps(self.project["plot"]))
+                        break
             self._plot_selected()
             if self.figure is None:
                 self.style_status.configure(text="Select a result before applying style")

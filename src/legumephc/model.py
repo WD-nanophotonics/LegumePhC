@@ -20,8 +20,12 @@ class Model2D:
     point_group: str | None = field(default=None, init=False)
     unverified_point_group: str | None = None
     closure_qpoints: np.ndarray | None = None
+    actual_lattice_constant_m: float | None = None
 
     def __post_init__(self) -> None:
+        if self.actual_lattice_constant_m is not None:
+            from .units import reference_length
+            reference_length(self.actual_lattice_constant_m, "m")
         if self.basis_policy not in {"auto", "native", "circular", "closed"}:
             raise ValueError("basis_policy must be auto, native, circular, or closed")
         if self.unverified_point_group not in {None, "C3", "C4"}:

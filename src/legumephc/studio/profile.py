@@ -61,7 +61,7 @@ def model_from_case(case: dict[str, Any]) -> Model2D:
         centers=np.asarray([item.get("center", [0.5, 0.5]) for item in motif_dicts], dtype=float),
     )
     affine = _affine(case)
-    return Model2D(spec, lattice, affine=affine, basis_policy=str(case.get("basis_policy", "auto")))
+    return Model2D(spec, lattice, affine=affine, basis_policy=str(case.get("basis_policy", "auto")), actual_lattice_constant_m=case.get("actual_lattice_constant_m"))
 
 
 def zero_based_band(value: int) -> int:

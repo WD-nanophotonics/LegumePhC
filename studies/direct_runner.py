@@ -111,6 +111,8 @@ def show_figure(figure) -> None:
 def run_operation(case_name: str, case: CaseParameters, parameters: Any, *, record_root: str | Path | None = None, plot: PlotParameters | None = None, show: bool = True, testing: bool = False) -> dict[str, Any]:
     """Run one operation and attach one default figure to its immutable record."""
     model = model_from_parameters(case)
+    from dataclasses import replace
+    model = replace(model, actual_lattice_constant_m=case.actual_lattice_constant_m)
     root = Path(record_root) if record_root is not None else ROOT / "studies" / case_name / "results"
     root.mkdir(parents=True, exist_ok=True)
     before = _record_dirs(root)

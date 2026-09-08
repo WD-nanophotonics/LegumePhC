@@ -164,7 +164,7 @@ def test_ui_motif_seven_column_parse_and_visibility_is_scoped():
     app = SimpleNamespace(project=project, _vars={key: SimpleNamespace(get=lambda value=value: value) for key, value in values.items()})
     app.motif_tree = SimpleNamespace(get_children=lambda: ["motif-1"], item=lambda _item, _what: ("circle", "circle", "0.2", "[0.5, 0.5]", "2.0", "8", "0.0"))
     parsed = StudioApp._case_from_controls(app)
-    assert parsed["geometry"]["motifs"][0]["epsilon"] == 2.0
+    assert parsed["geometry"]["motifs"][0]["epsilon"] == 4.0  # unspecified representation defaults to n
 
     class Widget:
         def __init__(self): self.removed = False

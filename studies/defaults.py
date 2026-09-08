@@ -36,6 +36,7 @@ class CaseParameters:
     motifs: tuple[MotifParameters, ...]
     affine: AffineParameters = field(default_factory=AffineParameters)
     lattice_constant: float = 1.0
+    actual_lattice_constant_m: float | None = 400e-9
     direct_basis: tuple[tuple[float, float], tuple[float, float]] | None = None
     basis_policy: Literal["auto", "native", "circular", "closed"] = "auto"
     name: str = ""
@@ -123,6 +124,13 @@ class PlotParameters:
     colorbar: bool = True
     font_size: float = 10.0
     field_quantity: Literal["E2", "H2", "energy_density"] = "energy_density"
+    frequency_unit: Literal["Normalized", "Hz", "THz"] = "Normalized"
+
+
+def triangular_motif_parameters(radius, angle=None, **kwargs):
+    """One radius: triangular; two radii: centred honeycomb A/B sites."""
+    from legumephc.motifs import triangular_motifs
+    return tuple(MotifParameters(**motif) for motif in triangular_motifs(radius, angle, **kwargs))
 
 
 def as_dict(value: Any) -> dict[str, Any]:
