@@ -15,6 +15,9 @@ from legumephc.studio.ui import _dialog_location
 
 def test_safe_geometry_expressions_are_whitelisted():
     assert safe_number("2*pi + sqrt(9)") == pytest.approx(2 * np.pi + 3)
+    assert safe_number("root(3)") == pytest.approx(np.sqrt(3))
+    assert safe_number("root(8, 3)") == pytest.approx(2)
+    assert safe_number("root(-8, 3)") == pytest.approx(-2)
     for expression in ("__import__('os')", "open('x')", "foo", "sqrt()", "1/0", "nan"):
         with pytest.raises(GeometryExpressionError):
             safe_number(expression)

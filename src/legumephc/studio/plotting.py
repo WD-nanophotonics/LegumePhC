@@ -211,7 +211,17 @@ def plot_record(record_path: str | Path, style: dict[str, Any] | None = None) ->
             norm = _berry_norm(values, options)
             render_mode = options.get("berry_render_mode", "sample_cells")
             if (render_mode == "linear_interpolation" or options.get("berry_interpolation")) and len(points) >= 3:
-                artist = axis.tricontourf(points[:, 0], points[:, 1], values, levels=24, cmap=options.get("cmap", "RdBu_r"), norm=norm)
+                from scipy.interpolate import griddata
+                from matplotlib.path import Path as MplPath
+                resolution = max(8, int(options.get("interpolation_resolution", 160)))
+                x = np.linspace(float(np.min(points[:, 0])), float(np.max(points[:, 0])), resolution)
+                y = np.linspace(float(np.min(points[:, 1])), float(np.max(points[:, 1])), resolution)
+                xx, yy = np.meshgrid(x, y)
+                zz = griddata(points, values, (xx, yy), method="linear")
+                if "domain_outline" in arrays:
+                    inside = MplPath(np.asarray(arrays["domain_outline"])).contains_points(np.column_stack((xx.ravel(), yy.ravel())), radius=1e-12).reshape(xx.shape)
+                    zz = np.where(inside, zz, np.nan)
+                artist = axis.contourf(xx, yy, zz, levels=24, cmap=options.get("cmap", "RdBu_r"), norm=norm)
             elif len(points) >= 2:
                 domain = np.asarray(arrays["domain_outline"]) if "domain_outline" in arrays else None
                 legacy_sampling = "sample_centers" not in arrays

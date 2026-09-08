@@ -58,11 +58,20 @@ class ResultCanvas(QtWidgets.QWidget):
             self.plot.addLegend()
         renderer = getattr(self, f"_render_{view.operation}", self._render_points)
         renderer()
+        if style.get("title"):
+            self.plot.setTitle(str(style["title"]))
+        if style.get("x_label"):
+            self.plot.setLabel("bottom", str(style["x_label"]))
+        if style.get("y_label"):
+            self.plot.setLabel("left", str(style["y_label"]))
         self._add_hit_target()
         for index in pins or []:
             if 0 <= int(index) < len(view.rows):
                 self.pin_row(int(index), emit=False)
         self.plot.autoRange()
+        x_limits, y_limits = style.get("x_limits"), style.get("y_limits")
+        if x_limits: self.plot.setXRange(float(x_limits[0]), float(x_limits[1]), padding=0)
+        if y_limits: self.plot.setYRange(float(y_limits[0]), float(y_limits[1]), padding=0)
 
     def _add_hit_target(self) -> None:
         if self.view is None or not self.view.rows:
@@ -176,8 +185,9 @@ class ResultCanvas(QtWidgets.QWidget):
         mpl_cmap = colormaps.get_cmap(cmap_name)
         if self._interpolated and len(points) >= 3:
             from scipy.interpolate import griddata
-            x = np.linspace(np.min(points[:, 0]), np.max(points[:, 0]), 160)
-            y = np.linspace(np.min(points[:, 1]), np.max(points[:, 1]), 160)
+            resolution = max(8, int(self.style.get("interpolation_resolution", 160)))
+            x = np.linspace(np.min(points[:, 0]), np.max(points[:, 0]), resolution)
+            y = np.linspace(np.min(points[:, 1]), np.max(points[:, 1]), resolution)
             xx, yy = np.meshgrid(x, y)
             zz = griddata(points, values, (xx, yy), method="linear")
             image = pg.ImageItem(zz.T)
@@ -268,12 +278,19 @@ class ResultCanvas(QtWidgets.QWidget):
         values = np.asarray(self.view.arrays.get(quantity, self.view.arrays["energy_density"]), dtype=float)
         component = max(0, min(int(self.style.get("component_index", 0)), values.shape[-1] - 1))
         image_values = values[0, :, :, component]
+        finite = image_values[np.isfinite(image_values)]
+        low = float(self.style.get("berry_vmin")) if self.style.get("berry_vmin") is not None else (float(np.min(finite)) if len(finite) else 0.0)
+        high = float(self.style.get("berry_vmax")) if self.style.get("berry_vmax") is not None else (float(np.max(finite)) if len(finite) else 1.0)
+        cmap = pg.colormap.getFromMatplotlib(str(self.style.get("cmap", "viridis")))
         if "display_x_corners" in self.view.arrays and "display_y_corners" in self.view.arrays:
             x = self.view.arrays["display_x_corners"]; y = self.view.arrays["display_y_corners"]
-            image = pg.PColorMeshItem(x, y, image_values, colorMap=pg.colormap.getFromMatplotlib(str(self.style.get("cmap", "viridis"))))
+            image = pg.PColorMeshItem(x, y, image_values, colorMap=cmap, levels=(low, high))
         else:
-            image = pg.ImageItem(image_values.T)
+            image = pg.ImageItem(image_values.T); image.setLookupTable(cmap.getLookupTable()); image.setLevels((low, high))
         self.plot.addItem(image); self._layer_items[quantity].append(image)
+        if self.style.get("colorbar", True):
+            self._colorbar = pg.ColorBarItem(values=(low, high), colorMap=cmap, label=quantity, interactive=False, width=16)
+            self.graphics.addItem(self._colorbar, row=0, col=1); self._layer_items["Colorbar"].append(self._colorbar)
         self.plot.setAspectLocked(True)
         self.plot.setLabel("bottom", "x index")
         self.plot.setLabel("left", "y index")

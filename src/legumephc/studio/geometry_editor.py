@@ -74,9 +74,20 @@ def safe_number(value: Any) -> float:
                 if isinstance(node.op, ast.Mult): return left * right
                 if isinstance(node.op, ast.Div): return left / right
                 return left ** right
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "sqrt" and len(node.args) == 1 and not node.keywords:
-                return math.sqrt(evaluate(node.args[0]))
-            raise GeometryExpressionError("allowed syntax: numbers, pi, sqrt(), +, -, *, /, **, and parentheses")
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and not node.keywords:
+                if node.func.id == "sqrt" and len(node.args) == 1:
+                    return math.sqrt(evaluate(node.args[0]))
+                if node.func.id == "root" and len(node.args) in (1, 2):
+                    radicand = evaluate(node.args[0])
+                    degree = 2.0 if len(node.args) == 1 else evaluate(node.args[1])
+                    if degree == 0:
+                        raise GeometryExpressionError("root degree must not be zero")
+                    if radicand < 0:
+                        if float(degree).is_integer() and int(degree) % 2:
+                            return -((-radicand) ** (1.0 / degree))
+                        raise GeometryExpressionError("negative values require an odd integer root degree")
+                    return radicand ** (1.0 / degree)
+            raise GeometryExpressionError("allowed syntax: numbers, pi, sqrt(), root(), +, -, *, /, **, and parentheses")
         try:
             result = evaluate(tree)
         except (ArithmeticError, OverflowError, ValueError) as exc:

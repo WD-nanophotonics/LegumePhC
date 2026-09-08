@@ -9,7 +9,10 @@ import time
 from typing import Any
 
 import numpy as np
-from .geometry_editor import editor_value, epsilon_from_editor, model_name
+from .geometry_editor import (
+    SHAPE_CHOICES, canonical_shape, editor_value, epsilon_from_editor,
+    model_name, safe_number, shape_choice, uniaxial_matrix,
+)
 from .inspection import RecordView, record_view
 from .plotting import export_figure, plot_record
 from .preview import preview_geometry
@@ -20,6 +23,8 @@ from .project import (
     validate_project,
 )
 from .worker import EVENT_SCHEMA, build_worker_request
+from ..motifs import triangular_motifs
+from ..units import LENGTH_UNITS, frequency_factor
 
 # Import Matplotlib-backed modules before Qt.  This avoids Qt's optional
 # __feature__ import hook inspecting dateutil's legacy six importer on CPython
@@ -42,6 +47,32 @@ OPERATIONS = {
 }
 
 
+def _number_text(value: Any) -> str:
+    return format(float(value), ".12g")
+
+
+def _optional_numbers(text: str, *, count: int | None = None) -> list[float] | None:
+    values = [safe_number(part) for part in text.split(",") if part.strip()]
+    if not values:
+        return None
+    if count is not None and len(values) != count:
+        raise ValueError(f"enter exactly {count} comma-separated values")
+    return values
+
+
+class StableComboBox(QtWidgets.QComboBox):
+    """Non-native list popup used consistently throughout the workbench."""
+
+    def __init__(self, parent: QtWidgets.QWidget | None = None):
+        super().__init__(parent)
+        view = QtWidgets.QListView(self)
+        view.setUniformItemSizes(True)
+        view.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.setView(view)
+        self.setSizeAdjustPolicy(QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.setMinimumContentsLength(8)
+
+
 def _motifs(case: dict[str, Any]) -> list[dict[str, Any]]:
     geometry = case["geometry"]
     return deepcopy(geometry.get("motifs") or [{
@@ -55,15 +86,18 @@ def _motifs(case: dict[str, Any]) -> list[dict[str, Any]]:
 class SitesDialog(QtWidgets.QDialog):
     """Structured multi-site editor; no type keywords or array syntax."""
 
-    COLUMNS = ("Name", "Shape", "Radius r/a", "Rotation (deg)", "Center x/a", "Center y/a", "n", "Sides")
+    COLUMNS = ("Name", "Shape", "Radius r/a", "Rotation (deg)", "Center x/a", "Center y/a", "Material", "Sides")
 
-    def __init__(self, parent: QtWidgets.QWidget, case: dict[str, Any]):
+    def __init__(self, parent: QtWidgets.QWidget, case: dict[str, Any], representation: str = "n"):
         super().__init__(parent)
         self.setWindowTitle("Edit lattice sites")
         self.resize(900, 360)
         self.result: list[dict[str, Any]] | None = None
+        self.case = case
+        self.representation = representation
         self.table = QtWidgets.QTableWidget(0, len(self.COLUMNS))
         self.table.setHorizontalHeaderLabels(self.COLUMNS)
+        self.table.horizontalHeaderItem(6).setText("n" if representation == "n" else "ε")
         self.table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
         for motif in _motifs(case):
             self._add_row(motif)
@@ -72,7 +106,7 @@ class SitesDialog(QtWidgets.QDialog):
         add = QtWidgets.QPushButton("Add site")
         remove = QtWidgets.QPushButton("Remove selected")
         center = QtWidgets.QPushButton("Center selected in unit cell")
-        add.clicked.connect(lambda: self._add_row({"name": f"Site {self.table.rowCount() + 1}", "kind": "circle", "radius": 0.2, "angle_degrees": 0.0, "center": [0.5, 0.0], "epsilon": 1.0, "sides": 0}))
+        add.clicked.connect(self._add_site)
         remove.clicked.connect(self._remove)
         center.clicked.connect(lambda: self._center(case))
         buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Ok | QtWidgets.QDialogButtonBox.StandardButton.Cancel)
@@ -81,20 +115,86 @@ class SitesDialog(QtWidgets.QDialog):
         tools = QtWidgets.QHBoxLayout()
         tools.addWidget(add); tools.addWidget(remove); tools.addWidget(center); tools.addStretch()
         layout = QtWidgets.QVBoxLayout(self)
-        layout.addWidget(note); layout.addWidget(self.table); layout.addLayout(tools); layout.addWidget(buttons)
+        self.error = QtWidgets.QLabel("")
+        self.error.setStyleSheet("color: #d32f2f")
+        layout.addWidget(note); layout.addWidget(self.table); layout.addLayout(tools); layout.addWidget(self.error); layout.addWidget(buttons)
 
     def _add_row(self, motif: dict[str, Any]) -> None:
         row = self.table.rowCount(); self.table.insertRow(row)
-        shape = "Circle" if motif.get("kind", "circle") == "circle" else ({3: "Triangle", 4: "Square"}.get(int(motif.get("sides", 6)), "Regular polygon"))
-        values = [motif.get("name", f"Site {row + 1}"), shape, motif.get("radius", 0.2), motif.get("angle_degrees", 0.0), *motif.get("center", [0.5, 0.0]), np.sqrt(float(motif.get("epsilon", 1.0))), motif.get("sides", 6)]
+        shape = shape_choice(motif.get("kind", "circle"), motif.get("sides"))
+        values = [motif.get("name", f"Site {row + 1}"), shape, motif.get("radius", 0.2), motif.get("angle_degrees", 0.0), *motif.get("center", [0.5, 0.0]), editor_value(float(motif.get("epsilon", 1.0)), self.representation), motif.get("sides", 6)]
         for column, value in enumerate(values):
             if column == 1:
-                combo = QtWidgets.QComboBox(); combo.addItems(["Circle", "Triangle", "Square", "Regular polygon"]); combo.setCurrentText(str(value)); self.table.setCellWidget(row, column, combo)
+                combo = StableComboBox(); combo.addItems(SHAPE_CHOICES); combo.setCurrentText(str(value)); combo.currentTextChanged.connect(lambda _text, r=row: self._shape_changed(r)); self.table.setCellWidget(row, column, combo)
             else:
-                self.table.setItem(row, column, QtWidgets.QTableWidgetItem(f"{float(value):.12g}" if isinstance(value, (float, np.floating)) else str(value)))
+                self.table.setItem(row, column, QtWidgets.QTableWidgetItem(_number_text(value) if isinstance(value, (float, np.floating)) else str(value)))
+        self._shape_changed(row)
+
+    def _shape_changed(self, row: int) -> None:
+        if row >= self.table.rowCount():
+            return
+        shape = self.table.cellWidget(row, 1).currentText()
+        angle = self.table.item(row, 3)
+        sides = self.table.item(row, 7)
+        angle.setFlags(angle.flags() | QtCore.Qt.ItemFlag.ItemIsEditable if shape != "Circle" else angle.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)
+        sides.setFlags(sides.flags() | QtCore.Qt.ItemFlag.ItemIsEditable if shape == "Regular polygon" else sides.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)
+        if shape in {"Triangle", "Square"}:
+            sides.setText("3" if shape == "Triangle" else "4")
+        elif shape == "Circle":
+            angle.setText("0")
+            sides.setText("0")
+
+    def _row_motif(self, row: int) -> dict[str, Any]:
+        field = "shape"
+        try:
+            shape = self.table.cellWidget(row, 1).currentText()
+            field = "sides"
+            raw_sides = safe_number(self.table.item(row, 7).text()) if shape == "Regular polygon" else self.table.item(row, 7).text()
+            if shape == "Regular polygon" and not float(raw_sides).is_integer():
+                raise ValueError("must be an integer")
+            kind, sides = canonical_shape(shape, raw_sides)
+            values = {}
+            for column, name in ((2, "radius"), (3, "rotation"), (4, "center x"), (5, "center y"), (6, "n")):
+                field = name
+                values[name] = safe_number(self.table.item(row, column).text())
+            if values["radius"] <= 0:
+                field = "radius"; raise ValueError("must be positive")
+            if values["n"] <= 0:
+                field = "n"; raise ValueError("must be positive")
+            return {
+                "name": self.table.item(row, 0).text().strip() or f"Site {row + 1}",
+                "kind": kind, "radius": values["radius"], "sides": sides,
+                "angle_degrees": 0.0 if kind == "circle" else values["rotation"],
+                "center": [values["center x"], values["center y"]],
+                "epsilon": epsilon_from_editor(values["n"], self.representation),
+            }
+        except Exception as exc:
+            raise ValueError(f"Site {row + 1}, {field}: {exc}") from exc
+
+    def _add_site(self) -> None:
+        new = {"name": f"Site {self.table.rowCount() + 1}", "kind": "circle", "radius": 0.2, "angle_degrees": 0.0, "center": [0.5, 0.0], "epsilon": 1.0, "sides": 0}
+        if self.case.get("lattice") == "triangular" and self.table.rowCount() == 1:
+            try:
+                first = self._row_motif(0)
+                scale = float(self.case.get("lattice_constant", 1.0))
+                cell_center = np.asarray([0.5, 0.0]) * scale
+                if np.allclose(first["center"], cell_center, rtol=0, atol=1e-12):
+                    locations = triangular_motifs((first["radius"], first["radius"]), (first["angle_degrees"], first["angle_degrees"]), kind=first["kind"], sides=first["sides"] or 3, epsilon=first["epsilon"], scale=scale)
+                    first["center"] = locations[0]["center"]
+                    first["name"] = "Site A"
+                    new = {**first, "name": "Site B", "center": locations[1]["center"]}
+                    self.table.item(0, 0).setText(first["name"])
+                    self.table.item(0, 4).setText(_number_text(first["center"][0]))
+                    self.table.item(0, 5).setText(_number_text(first["center"][1]))
+            except ValueError:
+                pass
+        self._add_row(new)
 
     def _remove(self) -> None:
         rows = sorted({index.row() for index in self.table.selectedIndexes()}, reverse=True)
+        if self.table.rowCount() - len(rows) < 1:
+            self.error.setText("Keep at least one site")
+            return
         for row in rows:
             self.table.removeRow(row)
 
@@ -117,18 +217,40 @@ class SitesDialog(QtWidgets.QDialog):
                 raise ValueError("add at least one site")
             motifs = []
             for row in range(self.table.rowCount()):
-                shape = self.table.cellWidget(row, 1).currentText()
-                kind = "circle" if shape == "Circle" else "polygon"
-                sides = {"Triangle": 3, "Square": 4}.get(shape, int(float(self.table.item(row, 7).text())) if shape == "Regular polygon" else 0)
-                radius = float(self.table.item(row, 2).text()); angle = float(self.table.item(row, 3).text())
-                x = float(self.table.item(row, 4).text()); y = float(self.table.item(row, 5).text()); n = float(self.table.item(row, 6).text())
-                if radius <= 0 or n <= 0 or (kind == "polygon" and sides < 3) or not np.isfinite([radius, angle, x, y, n]).all():
-                    raise ValueError(f"row {row + 1} contains an invalid geometry value")
-                motifs.append({"name": self.table.item(row, 0).text().strip() or f"Site {row + 1}", "kind": kind, "radius": radius, "sides": sides, "angle_degrees": 0.0 if kind == "circle" else angle, "center": [x, y], "epsilon": n * n})
+                motifs.append(self._row_motif(row))
             self.result = motifs
             self.accept()
         except Exception as exc:
-            QtWidgets.QMessageBox.warning(self, "Invalid site", str(exc))
+            self.error.setText(str(exc))
+
+
+class CentersDialog(QtWidgets.QDialog):
+    """Structured editor for Berry sampling centres."""
+
+    def __init__(self, parent: QtWidgets.QWidget, centers: list[list[float]]):
+        super().__init__(parent); self.setWindowTitle("Explicit Berry centers"); self.resize(420, 320); self.result = None
+        self.table = QtWidgets.QTableWidget(0, 2); self.table.setHorizontalHeaderLabels(["qₓ", "qᵧ"]); self.table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
+        for center in centers: self._add(center)
+        add = QtWidgets.QPushButton("Add center"); remove = QtWidgets.QPushButton("Remove selected")
+        add.clicked.connect(lambda: self._add([0.0, 0.0])); remove.clicked.connect(self._remove)
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Ok | QtWidgets.QDialogButtonBox.StandardButton.Cancel); buttons.accepted.connect(self._accept); buttons.rejected.connect(self.reject)
+        self.error = QtWidgets.QLabel(); self.error.setStyleSheet("color: #d32f2f")
+        tools = QtWidgets.QHBoxLayout(); tools.addWidget(add); tools.addWidget(remove); tools.addStretch()
+        layout = QtWidgets.QVBoxLayout(self); layout.addWidget(QtWidgets.QLabel("Reduced Cartesian coordinates, k = 2πq/a")); layout.addWidget(self.table); layout.addLayout(tools); layout.addWidget(self.error); layout.addWidget(buttons)
+
+    def _add(self, center: list[float]) -> None:
+        row = self.table.rowCount(); self.table.insertRow(row)
+        for column, value in enumerate(center): self.table.setItem(row, column, QtWidgets.QTableWidgetItem(_number_text(value)))
+
+    def _remove(self) -> None:
+        for row in sorted({item.row() for item in self.table.selectedIndexes()}, reverse=True): self.table.removeRow(row)
+
+    def _accept(self) -> None:
+        try:
+            if self.table.rowCount() < 1: raise ValueError("Add at least one center")
+            self.result = [[safe_number(self.table.item(row, column).text()) for column in range(2)] for row in range(self.table.rowCount())]
+            self.accept()
+        except Exception as exc: self.error.setText(str(exc))
 
 
 class InspectorTable(QtWidgets.QTableWidget):
@@ -175,6 +297,8 @@ class StudioWindow(QtWidgets.QMainWindow):
         self.active_request: dict[str, Any] | None = None
         self.stdout_buffer = ""
         self.run_started = 0.0
+        self.last_worker_error: str | None = None
+        self._cancelling = False
         self.current_view: RecordView | None = None
         self._building = False
         self._build()
@@ -215,8 +339,25 @@ class StudioWindow(QtWidgets.QMainWindow):
         preset_menu = file_menu.addMenu("Parameter Preset")
         preset_menu.addAction("Apply…", self.apply_preset_file); preset_menu.addAction("Save…", self.save_preset_file)
         file_menu.addSeparator(); file_menu.addAction("Exit", self.close)
-        view_menu = self.menuBar().addMenu("View")
-        view_menu.addAction("Reset Plot View", lambda: self.result_canvas.plot.autoRange())
+        self.view_menu = self.menuBar().addMenu("View")
+        self.view_menu.addAction("Reset Plot View", lambda: self.result_canvas.plot.autoRange())
+        self.view_menu.addSeparator()
+        help_menu = self.menuBar().addMenu("Help")
+        help_menu.addAction("Geometry coordinates and affine transform", self._geometry_help)
+        help_menu.addAction("Berry targets and sampling", self._berry_help)
+        help_menu.addAction("Projects and parameter presets", self._project_help)
+
+    def _show_help(self, title: str, text: str) -> None:
+        QtWidgets.QMessageBox.information(self, title, text)
+
+    def _geometry_help(self) -> None:
+        self._show_help("Geometry coordinates", "Site centers, radii and rotations are Cartesian values in units of a before affine transformation. Standard triangular and square direct bases are automatic. Custom basis, full affine matrix and motif translation are under Advanced geometry. Numeric fields accept pi, sqrt(), root(), arithmetic and parentheses.")
+
+    def _berry_help(self) -> None:
+        self._show_help("Berry targets and sampling", "Single band computes the Abelian curvature of one band. Composite subspace computes the trace of the non-Abelian curvature for the complete contiguous band range; it is not the curvature of either individual band. qₓ/qᵧ are reduced Cartesian coordinates with k=2πq/a. Berry step controls the Wilson loop, while grid size controls sampling centers.")
+
+    def _project_help(self) -> None:
+        self._show_help("Projects and presets", "A Project stores the model, calculation nodes, display settings and immutable result references. A Parameter Preset stores reusable model and calculation parameters only; it contains no results.")
 
     def result_canvas_clear_later(self) -> None:
         if hasattr(self, "result_canvas"): self.result_canvas.clear_pins()
@@ -224,7 +365,7 @@ class StudioWindow(QtWidgets.QMainWindow):
     def _tree_dock(self) -> None:
         dock = QtWidgets.QDockWidget("Project", self); dock.setObjectName("ProjectDock")
         self.tree = QtWidgets.QTreeWidget(); self.tree.setHeaderHidden(True); self.tree.currentItemChanged.connect(self._tree_selected)
-        dock.setWidget(self.tree); self.addDockWidget(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea, dock)
+        dock.setWidget(self.tree); self.addDockWidget(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea, dock); self.view_menu.addAction(dock.toggleViewAction())
 
     def _settings_dock(self) -> None:
         dock = QtWidgets.QDockWidget("Settings", self); dock.setObjectName("SettingsDock")
@@ -232,7 +373,7 @@ class StudioWindow(QtWidgets.QMainWindow):
         self.model_page = QtWidgets.QWidget(); self.calc_page = QtWidgets.QWidget(); self.plot_page = QtWidgets.QWidget()
         self.settings_tabs.addTab(self.model_page, "Geometry"); self.settings_tabs.addTab(self.calc_page, "Calculation"); self.settings_tabs.addTab(self.plot_page, "Plot Style")
         self._build_model_form(); self._build_calc_form(); self._build_plot_form()
-        self.addDockWidget(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea, dock)
+        self.addDockWidget(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea, dock); self.view_menu.addAction(dock.toggleViewAction())
 
     def _bottom_dock(self) -> None:
         dock = QtWidgets.QDockWidget("Data / Progress / Log", self); dock.setObjectName("BottomDock")
@@ -246,29 +387,83 @@ class StudioWindow(QtWidgets.QMainWindow):
         self.result_details = QtWidgets.QPlainTextEdit(); self.result_details.setReadOnly(True)
         self.layers = QtWidgets.QWidget(); self.layers_layout = QtWidgets.QVBoxLayout(self.layers); self.layers_layout.addStretch()
         tabs.addTab(self.inspector, "Data Inspector"); tabs.addTab(self.layers, "Layers"); tabs.addTab(self.result_details, "Result Details"); tabs.addTab(progress_page, "Progress"); tabs.addTab(self.log, "Log")
-        dock.setWidget(tabs); self.addDockWidget(QtCore.Qt.DockWidgetArea.BottomDockWidgetArea, dock)
+        dock.setWidget(tabs); self.addDockWidget(QtCore.Qt.DockWidgetArea.BottomDockWidgetArea, dock); self.view_menu.addAction(dock.toggleViewAction())
 
     def result_canvas_select_later(self, index: int) -> None:
         if hasattr(self, "result_canvas"): self.result_canvas.select_row(index)
 
     def _build_model_form(self) -> None:
         form = QtWidgets.QFormLayout(self.model_page)
-        self.lattice = QtWidgets.QComboBox(); self.lattice.addItems(["triangular", "square", "custom"])
-        self.actual_a = QtWidgets.QDoubleSpinBox(); self.actual_a.setRange(1e-6, 1e9); self.actual_a.setDecimals(9); self.actual_a.setSuffix(" nm")
-        self.background_n = QtWidgets.QDoubleSpinBox(); self.background_n.setRange(0.001, 100); self.background_n.setDecimals(9)
-        self.basis_policy = QtWidgets.QComboBox(); self.basis_policy.addItems(["auto", "native"])
-        self.deformation = QtWidgets.QComboBox(); self.deformation.addItems(["none", "uniaxial", "custom"])
-        self.factor = QtWidgets.QDoubleSpinBox(); self.factor.setRange(0.001, 100); self.factor.setDecimals(9)
-        self.angle = QtWidgets.QDoubleSpinBox(); self.angle.setRange(-360, 360); self.angle.setDecimals(9); self.angle.setSuffix("°")
+        self.lattice = StableComboBox(); self.lattice.addItems(["triangular", "square", "custom"])
+        self.actual_a = QtWidgets.QLineEdit(); self.length_unit = StableComboBox(); self.length_unit.addItems(["nm", "μm", "m"])
+        length_row = QtWidgets.QWidget(); length_layout = QtWidgets.QHBoxLayout(length_row); length_layout.setContentsMargins(0, 0, 0, 0); length_layout.addWidget(self.actual_a); length_layout.addWidget(self.length_unit)
+        self.material_rep = StableComboBox(); self.material_rep.addItems(["n", "epsilon"])
+        self.background_material = QtWidgets.QLineEdit()
+        self.basis_summary = QtWidgets.QLabel(); self.basis_summary.setWordWrap(True)
+        self.basis_policy = StableComboBox(); self.basis_policy.addItems(["auto", "native"])
+        self.deformation = StableComboBox(); self.deformation.addItems(["none", "uniaxial", "custom"])
+        self.factor = QtWidgets.QLineEdit(); self.angle = QtWidgets.QLineEdit()
         self.sites_button = QtWidgets.QPushButton("Edit sites…"); self.sites_button.clicked.connect(self.edit_sites)
-        form.addRow("Lattice", self.lattice); form.addRow("Actual lattice constant", self.actual_a); form.addRow("Background n", self.background_n); form.addRow("Basis policy", self.basis_policy); form.addRow("Sites", self.sites_button); form.addRow("Deformation", self.deformation); form.addRow("Stretch factor", self.factor); form.addRow("Stretch angle", self.angle)
-        for widget in (self.lattice, self.actual_a, self.background_n, self.basis_policy, self.deformation, self.factor, self.angle):
-            signal = widget.currentTextChanged if isinstance(widget, QtWidgets.QComboBox) else widget.valueChanged
-            signal.connect(self._model_changed)
+        form.addRow("Lattice", self.lattice); form.addRow("Actual lattice constant", length_row); form.addRow("Material representation", self.material_rep); form.addRow("Background material", self.background_material); form.addRow("Direct basis", self.basis_summary); form.addRow("Basis policy", self.basis_policy); form.addRow("Sites", self.sites_button); form.addRow("Deformation", self.deformation); form.addRow("Stretch factor", self.factor); form.addRow("Stretch angle (deg)", self.angle)
+        self.advanced = QtWidgets.QGroupBox("Advanced geometry"); self.advanced.setCheckable(True)
+        advanced_layout = QtWidgets.QVBoxLayout(self.advanced); self.advanced_contents = QtWidgets.QWidget(); advanced_layout.addWidget(self.advanced_contents)
+        advanced_form = QtWidgets.QFormLayout(self.advanced_contents)
+        self.basis_edits = [QtWidgets.QLineEdit() for _ in range(4)]
+        basis_box = QtWidgets.QWidget(); basis_grid = QtWidgets.QGridLayout(basis_box); basis_grid.setContentsMargins(0, 0, 0, 0)
+        for index, edit in enumerate(self.basis_edits): basis_grid.addWidget(edit, index // 2, index % 2)
+        self.affine_edits = [QtWidgets.QLineEdit() for _ in range(4)]
+        affine_box = QtWidgets.QWidget(); affine_grid = QtWidgets.QGridLayout(affine_box); affine_grid.setContentsMargins(0, 0, 0, 0)
+        for index, edit in enumerate(self.affine_edits): affine_grid.addWidget(edit, index // 2, index % 2)
+        self.tx = QtWidgets.QLineEdit(); self.ty = QtWidgets.QLineEdit(); translation_box = QtWidgets.QWidget(); translation_layout = QtWidgets.QHBoxLayout(translation_box); translation_layout.setContentsMargins(0, 0, 0, 0); translation_layout.addWidget(self.tx); translation_layout.addWidget(self.ty)
+        self.geometry_scale = QtWidgets.QLineEdit()
+        advanced_form.addRow("Custom direct basis", basis_box); advanced_form.addRow("Affine matrix", affine_box); advanced_form.addRow("Motif translation x/y", translation_box); advanced_form.addRow("Geometry scale", self.geometry_scale); self.advanced_contents.setVisible(False)
+        form.addRow(self.advanced)
+        self.lattice.currentTextChanged.connect(self._lattice_changed)
+        self.material_rep.currentTextChanged.connect(self._material_rep_changed)
+        self.length_unit.currentTextChanged.connect(self._length_unit_changed)
+        self.deformation.currentTextChanged.connect(self._deformation_changed)
+        for combo in (self.basis_policy,): combo.currentTextChanged.connect(self._model_changed)
+        for edit in (self.actual_a, self.background_material, self.factor, self.angle, *self.basis_edits, *self.affine_edits, self.tx, self.ty, self.geometry_scale): edit.editingFinished.connect(self._model_changed)
+        self.advanced.toggled.connect(self.advanced_contents.setVisible); self.advanced.toggled.connect(self._advanced_changed)
+
+    def _lattice_changed(self, *_args) -> None:
+        lattice = self.lattice.currentText()
+        if lattice == "triangular":
+            self.basis_summary.setText("a₁=(a/2, √3a/2), a₂=(a/2, −√3a/2)")
+        elif lattice == "square":
+            self.basis_summary.setText("a₁=(a, 0), a₂=(0, a)")
+        else:
+            self.basis_summary.setText("Custom dimensionless direct basis")
+        for edit in self.basis_edits: edit.setEnabled(lattice == "custom")
+        self._model_changed()
+
+    def _deformation_changed(self, *_args) -> None:
+        kind = self.deformation.currentText()
+        self.factor.setEnabled(kind == "uniaxial"); self.angle.setEnabled(kind == "uniaxial")
+        for edit in self.affine_edits: edit.setEnabled(kind == "custom")
+        self._model_changed()
+
+    def _advanced_changed(self, expanded: bool) -> None:
+        if self._building: return
+        self.project.setdefault("ui_state", {})["advanced_expanded"] = bool(expanded); self.dirty = True
+
+    def _material_rep_changed(self, representation: str) -> None:
+        if self._building: return
+        epsilon = float(self.project["model"]["geometry"].get("epsilon_background", 7.29))
+        self.background_material.setText(_number_text(editor_value(epsilon, representation)))
+        self.project.setdefault("ui_state", {})["material_representation"] = representation
+        self.dirty = True; self.statusBar().showMessage("Material display changed — scientific epsilon unchanged")
+
+    def _length_unit_changed(self, unit: str) -> None:
+        if self._building: return
+        length = self.project["model"].get("actual_lattice_constant_m")
+        self.actual_a.setText("" if length is None else _number_text(float(length) / LENGTH_UNITS[unit]))
+        self.project.setdefault("ui_state", {})["length_unit"] = unit
+        self.dirty = True
 
     def _build_calc_form(self) -> None:
-        form = QtWidgets.QFormLayout(self.calc_page)
-        self.operation = QtWidgets.QComboBox(); [self.operation.addItem(label, key) for key, label in OPERATIONS.items()]
+        form = QtWidgets.QFormLayout(self.calc_page); self.calc_form = form; self._calc_rows = {}
+        self.operation = StableComboBox(); [self.operation.addItem(label, key) for key, label in OPERATIONS.items()]
         self.qx = QtWidgets.QDoubleSpinBox(); self.qy = QtWidgets.QDoubleSpinBox()
         for widget in (self.qx, self.qy): widget.setRange(-100, 100); widget.setDecimals(9)
         self.band = QtWidgets.QSpinBox(); self.band.setRange(1, 100)
@@ -276,51 +471,197 @@ class StudioWindow(QtWidgets.QMainWindow):
         self.last_band = QtWidgets.QSpinBox(); self.last_band.setRange(1, 100)
         self.gmax = QtWidgets.QDoubleSpinBox(); self.gmax.setRange(0.01, 100); self.gmax.setDecimals(6)
         self.numeig = QtWidgets.QSpinBox(); self.numeig.setRange(1, 200)
-        self.pol = QtWidgets.QComboBox(); self.pol.addItems(["te", "tm"])
+        self.pol = StableComboBox(); self.pol.addItems(["te", "tm"])
+        self.path = StableComboBox(); self.path.addItem("Automatic high-symmetry path", "identity")
+        self.berry_target = StableComboBox(); self.berry_target.addItem("Single band", "single_band"); self.berry_target.addItem("Composite subspace", "composite_subspace")
+        self.berry_sampling = StableComboBox(); self.berry_sampling.addItem("Single plaquette", "single_plaquette"); self.berry_sampling.addItem("First BZ grid", "first_bz_grid"); self.berry_sampling.addItem("Explicit centers", "explicit_centers")
         self.samples = QtWidgets.QSpinBox(); self.samples.setRange(2, 10000)
         self.grid_size = QtWidgets.QSpinBox(); self.grid_size.setRange(2, 1000)
+        self.field_grid = QtWidgets.QSpinBox(); self.field_grid.setRange(2, 1000)
         self.efs_grid = QtWidgets.QSpinBox(); self.efs_grid.setRange(2, 1000)
         self.berry_step = QtWidgets.QDoubleSpinBox(); self.berry_step.setRange(1e-8, 1); self.berry_step.setDecimals(9)
-        for label, widget in (("Calculation", self.operation), ("qₓ", self.qx), ("qᵧ", self.qy), ("Target band", self.band), ("Composite first band", self.first_band), ("Composite last band", self.last_band), ("gmax", self.gmax), ("Eigenvalues", self.numeig), ("Polarization", self.pol), ("Samples per segment", self.samples), ("Berry grid size", self.grid_size), ("EFS grid size", self.efs_grid), ("Berry step", self.berry_step)):
-            form.addRow(label, widget)
+        self.centers_button = QtWidgets.QPushButton("Edit explicit centers…"); self.centers_button.clicked.connect(self.edit_centers)
+        self.source_result = StableComboBox(); self.frequency_window = QtWidgets.QLineEdit(); self.frequency_samples = QtWidgets.QLineEdit(); self.response_weights = QtWidgets.QLineEdit(); self.occupation = QtWidgets.QLineEdit()
+        for key, label, widget in (("operation", "Calculation", self.operation), ("qx", "qₓ (reduced Cartesian)", self.qx), ("qy", "qᵧ (reduced Cartesian)", self.qy), ("band", "Target band (one-based)", self.band), ("first_band", "First composite band", self.first_band), ("last_band", "Last composite band", self.last_band), ("gmax", "gmax", self.gmax), ("numeig", "Eigenmodes", self.numeig), ("pol", "Polarization", self.pol), ("path", "Band path", self.path), ("samples", "Samples per segment", self.samples), ("field_grid", "Field grid size", self.field_grid), ("berry_grid", "Berry grid size", self.grid_size), ("efs_grid", "EFS grid size", self.efs_grid), ("berry_step", "Berry step", self.berry_step), ("berry_target", "Berry target", self.berry_target), ("berry_sampling", "Berry sampling", self.berry_sampling), ("centers", "Sampling centers", self.centers_button), ("source", "Qualified Berry source", self.source_result), ("frequency_window", "Frequency window", self.frequency_window), ("frequency_samples", "Frequency samples", self.frequency_samples), ("response_weights", "Response weights", self.response_weights), ("occupation", "Occupation", self.occupation)):
+            form.addRow(label, widget); self._calc_rows[key] = widget
         calculation_tools = QtWidgets.QHBoxLayout()
+        self.run_button = QtWidgets.QPushButton("Run"); self.cancel_button = QtWidgets.QPushButton("Cancel"); self.cancel_button.setEnabled(False); self.run_button.clicked.connect(self.run); self.cancel_button.clicked.connect(self.cancel); calculation_tools.addWidget(self.run_button); calculation_tools.addWidget(self.cancel_button)
         for text, slot in (("Add", self.add_calculation), ("Copy", self.copy_calculation), ("Rename", self.rename_calculation), ("Delete", self.delete_calculation)):
             button = QtWidgets.QPushButton(text); button.clicked.connect(slot); calculation_tools.addWidget(button)
         form.addRow(calculation_tools)
+        self.plot_after = QtWidgets.QCheckBox("Plot after Run"); self.plot_after.setChecked(True); form.addRow(self.plot_after)
         self.operation.currentIndexChanged.connect(self._calculation_changed)
-        for widget in (self.qx, self.qy, self.band, self.first_band, self.last_band, self.gmax, self.numeig, self.pol, self.samples, self.grid_size, self.efs_grid, self.berry_step):
-            signal = widget.currentTextChanged if isinstance(widget, QtWidgets.QComboBox) else widget.valueChanged
+        self.berry_target.currentIndexChanged.connect(self._berry_controls_changed); self.berry_sampling.currentIndexChanged.connect(self._berry_controls_changed)
+        for widget in (self.qx, self.qy, self.band, self.first_band, self.last_band, self.gmax, self.numeig, self.pol, self.path, self.samples, self.field_grid, self.grid_size, self.efs_grid, self.berry_step, self.source_result, self.frequency_window, self.frequency_samples, self.response_weights, self.occupation, self.plot_after):
+            if isinstance(widget, QtWidgets.QComboBox): signal = widget.currentTextChanged
+            elif isinstance(widget, QtWidgets.QLineEdit): signal = widget.editingFinished
+            elif isinstance(widget, QtWidgets.QCheckBox): signal = widget.toggled
+            else: signal = widget.valueChanged
             signal.connect(self._calculation_changed)
 
+    def _set_calc_visible(self, key: str, visible: bool) -> None:
+        widget = self._calc_rows[key]
+        self.calc_form.setRowVisible(widget, visible)
+
+    def _update_calculation_visibility(self) -> None:
+        operation = self.operation.currentData() or "frequency_at_k"
+        visible = {"operation", "gmax", "numeig", "pol"}
+        visible.update({
+            "frequency_at_k": {"qx", "qy", "band"},
+            "band_structure": {"path", "samples"},
+            "fields_energy": {"qx", "qy", "first_band", "last_band", "field_grid"},
+            "efs": {"first_band", "last_band", "efs_grid"},
+            "berry": {"berry_target", "berry_sampling", "berry_step"},
+            "berry_curvature_dipole": {"source", "frequency_window", "frequency_samples", "response_weights", "occupation"},
+        }[operation])
+        if operation == "berry":
+            if self.berry_target.currentData() == "single_band": visible.add("band")
+            else: visible.update({"first_band", "last_band"})
+            sampling = self.berry_sampling.currentData()
+            if sampling == "single_plaquette": visible.update({"qx", "qy"})
+            elif sampling == "first_bz_grid": visible.add("berry_grid")
+            else: visible.add("centers")
+        for key in self._calc_rows: self._set_calc_visible(key, key in visible)
+        self.numeig.setReadOnly(operation == "berry")
+        self._update_plot_visibility(operation)
+
+    def _berry_controls_changed(self, *_args) -> None:
+        if self._building: return
+        target = self.band.value() if self.berry_target.currentData() == "single_band" else self.last_band.value()
+        self.numeig.setValue(target + 1)
+        self._update_calculation_visibility(); self._calculation_changed()
+
+    def edit_centers(self) -> None:
+        calculation = self._selected_calculation()["parameters"]
+        dialog = CentersDialog(self, list(calculation.get("centers", [])))
+        if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted and dialog.result is not None:
+            calculation["centers"] = dialog.result; self.dirty = True; self.statusBar().showMessage("Explicit Berry centers updated")
+
     def _build_plot_form(self) -> None:
-        form = QtWidgets.QFormLayout(self.plot_page)
-        self.unit = QtWidgets.QComboBox(); self.unit.addItems(["Normalized", "GHz", "THz"])
+        form = QtWidgets.QFormLayout(self.plot_page); self.plot_form = form; self._plot_rows = {}
+        self.unit = StableComboBox(); self.unit.addItems(["Normalized", "GHz", "THz"])
         self.band_lines = QtWidgets.QCheckBox(); self.band_markers = QtWidgets.QCheckBox(); self.grid = QtWidgets.QCheckBox(); self.legend = QtWidgets.QCheckBox(); self.colorbar = QtWidgets.QCheckBox(); self.sample_centers = QtWidgets.QCheckBox()
-        self.render_mode = QtWidgets.QComboBox(); self.render_mode.addItem("Sample-cell tiling", "sample_cells"); self.render_mode.addItem("Linear interpolation", "linear_interpolation")
-        self.cmap = QtWidgets.QComboBox(); self.cmap.setEditable(True); self.cmap.addItems(["RdBu_r", "viridis", "plasma", "magma", "coolwarm"])
+        self.render_mode = StableComboBox(); self.render_mode.addItem("Sample-cell tiling", "sample_cells"); self.render_mode.addItem("Linear interpolation", "linear_interpolation")
+        self.cmap = StableComboBox(); self.cmap.setEditable(True); self.cmap.addItems(["RdBu_r", "viridis", "plasma", "magma", "coolwarm"])
         self.width = QtWidgets.QSpinBox(); self.width.setRange(100, 10000); self.height = QtWidgets.QSpinBox(); self.height.setRange(100, 10000); self.dpi = QtWidgets.QSpinBox(); self.dpi.setRange(30, 1200)
-        for label, widget in (("Frequency unit", self.unit), ("Band lines", self.band_lines), ("Band markers", self.band_markers), ("Grid", self.grid), ("Legend", self.legend), ("Berry render", self.render_mode), ("Colormap", self.cmap), ("Colorbar", self.colorbar), ("Sample centers", self.sample_centers), ("Export width", self.width), ("Export height", self.height), ("DPI", self.dpi)):
-            form.addRow(label, widget)
+        self.title_edit = QtWidgets.QLineEdit(); self.x_label_edit = QtWidgets.QLineEdit(); self.y_label_edit = QtWidgets.QLineEdit()
+        self.xmin = QtWidgets.QLineEdit(); self.xmax = QtWidgets.QLineEdit(); self.ymin = QtWidgets.QLineEdit(); self.ymax = QtWidgets.QLineEdit()
+        self.linewidth = QtWidgets.QDoubleSpinBox(); self.linewidth.setRange(.01, 100); self.linewidth.setDecimals(3); self.marker_size = QtWidgets.QDoubleSpinBox(); self.marker_size.setRange(.01, 100); self.marker_size.setDecimals(3)
+        self.component = QtWidgets.QSpinBox(); self.component.setRange(0, 1000); self.field_quantity = StableComboBox(); self.field_quantity.addItems(["energy_density", "E2", "H2"])
+        self.vmin = QtWidgets.QLineEdit(); self.vmax = QtWidgets.QLineEdit(); self.interpolation_resolution = QtWidgets.QSpinBox(); self.interpolation_resolution.setRange(8, 2000); self.efs_levels = QtWidgets.QLineEdit()
+        def pair(left, right):
+            host = QtWidgets.QWidget(); layout = QtWidgets.QHBoxLayout(host); layout.setContentsMargins(0, 0, 0, 0); layout.addWidget(left); layout.addWidget(right); return host
+        for key, label, widget in (("unit", "Frequency unit", self.unit), ("width", "Export width (px)", self.width), ("height", "Export height (px)", self.height), ("dpi", "DPI", self.dpi), ("title", "Title", self.title_edit), ("xlabel", "X label", self.x_label_edit), ("ylabel", "Y label", self.y_label_edit), ("xlimits", "X min / max", pair(self.xmin, self.xmax)), ("ylimits", "Y min / max", pair(self.ymin, self.ymax)), ("lines", "Band lines", self.band_lines), ("markers", "Band markers", self.band_markers), ("linewidth", "Line width", self.linewidth), ("marker_size", "Marker size", self.marker_size), ("grid", "Grid", self.grid), ("legend", "Legend", self.legend), ("field_quantity", "Field quantity", self.field_quantity), ("component", "Component / band", self.component), ("render", "Berry render", self.render_mode), ("resolution", "Interpolation resolution", self.interpolation_resolution), ("cmap", "Colormap", self.cmap), ("vmin", "Color minimum", self.vmin), ("vmax", "Color maximum", self.vmax), ("colorbar", "Colorbar", self.colorbar), ("centers", "Sample centers", self.sample_centers), ("efs_levels", "EFS levels", self.efs_levels)):
+            form.addRow(label, widget); self._plot_rows[key] = widget
         apply = QtWidgets.QPushButton("Apply to Current Plot"); apply.clicked.connect(self.plot_selected); form.addRow(apply)
-        for widget in (self.unit, self.band_lines, self.band_markers, self.grid, self.legend, self.render_mode, self.cmap, self.colorbar, self.sample_centers, self.width, self.height, self.dpi):
-            signal = widget.currentTextChanged if isinstance(widget, QtWidgets.QComboBox) else (widget.toggled if isinstance(widget, QtWidgets.QCheckBox) else widget.valueChanged)
+        for widget in (self.unit, self.band_lines, self.band_markers, self.grid, self.legend, self.render_mode, self.cmap, self.colorbar, self.sample_centers, self.width, self.height, self.dpi, self.title_edit, self.x_label_edit, self.y_label_edit, self.xmin, self.xmax, self.ymin, self.ymax, self.linewidth, self.marker_size, self.component, self.field_quantity, self.vmin, self.vmax, self.interpolation_resolution, self.efs_levels):
+            if widget is self.unit: continue
+            if isinstance(widget, QtWidgets.QComboBox): signal = widget.currentTextChanged
+            elif isinstance(widget, QtWidgets.QCheckBox): signal = widget.toggled
+            elif isinstance(widget, QtWidgets.QLineEdit): signal = widget.editingFinished
+            else: signal = widget.valueChanged
             signal.connect(self._plot_changed)
+        self.unit.currentTextChanged.connect(self._frequency_unit_changed)
+
+    def _update_plot_visibility(self, operation: str | None = None) -> None:
+        operation = operation or (self.current_view.operation if self.current_view else self.operation.currentData()) or "frequency_at_k"
+        visible = {"width", "height", "dpi", "title", "xlabel", "ylabel", "xlimits", "ylimits", "grid", "legend"}
+        specific = {
+            "band_structure": {"unit", "lines", "markers", "linewidth", "marker_size"},
+            "frequency_at_k": {"unit"},
+            "berry": {"render", "resolution", "cmap", "vmin", "vmax", "colorbar", "centers"},
+            "efs": {"unit", "component", "cmap", "colorbar", "efs_levels"},
+            "fields_energy": {"field_quantity", "component", "cmap", "colorbar", "vmin", "vmax"},
+            "berry_curvature_dipole": {"component", "cmap", "colorbar"},
+        }.get(operation, set())
+        visible |= specific
+        for key, widget in self._plot_rows.items(): self.plot_form.setRowVisible(widget, key in visible)
+        self.interpolation_resolution.setEnabled(self.render_mode.currentData() == "linear_interpolation")
+
+    def _load_plot_controls(self, style: dict[str, Any]) -> None:
+        widgets = [self.unit, self.band_lines, self.band_markers, self.grid, self.legend, self.colorbar, self.sample_centers, self.render_mode, self.cmap, self.width, self.height, self.dpi, self.title_edit, self.x_label_edit, self.y_label_edit, self.xmin, self.xmax, self.ymin, self.ymax, self.linewidth, self.marker_size, self.component, self.field_quantity, self.vmin, self.vmax, self.interpolation_resolution, self.efs_levels]
+        blockers = [QtCore.QSignalBlocker(widget) for widget in widgets]
+        try:
+            self.unit.setCurrentText(style.get("frequency_unit", "Normalized")); self.band_lines.setChecked(bool(style.get("band_line", True))); self.band_markers.setChecked(bool(style.get("band_markers", False))); self.grid.setChecked(bool(style.get("grid", True))); self.legend.setChecked(bool(style.get("legend", True))); self.colorbar.setChecked(bool(style.get("colorbar", True))); self.sample_centers.setChecked(bool(style.get("show_sample_centers", False))); self.render_mode.setCurrentIndex(max(0, self.render_mode.findData(style.get("berry_render_mode", "sample_cells")))); self.cmap.setCurrentText(style.get("cmap", "RdBu_r")); self.width.setValue(int(style.get("width_px", 900))); self.height.setValue(int(style.get("height_px", 600))); self.dpi.setValue(int(style.get("dpi", 100)))
+            self.title_edit.setText(str(style.get("title", ""))); self.x_label_edit.setText(str(style.get("x_label", ""))); self.y_label_edit.setText(str(style.get("y_label", "")))
+            xlimits, ylimits = style.get("x_limits"), style.get("y_limits"); self.xmin.setText("" if not xlimits else _number_text(xlimits[0])); self.xmax.setText("" if not xlimits else _number_text(xlimits[1])); self.ymin.setText("" if not ylimits else _number_text(ylimits[0])); self.ymax.setText("" if not ylimits else _number_text(ylimits[1]))
+            self.linewidth.setValue(float(style.get("linewidth", 1.5))); self.marker_size.setValue(float(style.get("marker_size", 4))); self.component.setValue(int(style.get("component_index", 0))); self.field_quantity.setCurrentText(style.get("field_quantity", "energy_density")); self.vmin.setText("" if style.get("berry_vmin") is None else _number_text(style["berry_vmin"])); self.vmax.setText("" if style.get("berry_vmax") is None else _number_text(style["berry_vmax"])); self.interpolation_resolution.setValue(int(style.get("interpolation_resolution", 160))); self.efs_levels.setText(", ".join(_number_text(value) for value in style.get("efs_levels") or []))
+        finally:
+            del blockers
+
+    def _frequency_unit_changed(self, *_args) -> None:
+        if self._building: return
+        old = self.project["plot"].get("frequency_unit", "Normalized"); new = self.unit.currentText()
+        try:
+            length = self.project["model"].get("actual_lattice_constant_m")
+            if self.current_view is not None:
+                saved = self.current_view.config.get("config", self.current_view.config); length = saved.get("case", {}).get("actual_lattice_constant_m", saved.get("actual_lattice_constant_m"))
+            ratio = frequency_factor(new, length) / frequency_factor(old, length)
+            operation = self.current_view.operation if self.current_view is not None else self.operation.currentData()
+            if operation == "efs" and self.efs_levels.text().strip():
+                self.efs_levels.setText(", ".join(_number_text(value * ratio) for value in _optional_numbers(self.efs_levels.text()) or []))
+            if operation in {"band_structure", "frequency_at_k"} and self.ymin.text().strip() and self.ymax.text().strip():
+                self.ymin.setText(_number_text(safe_number(self.ymin.text()) * ratio)); self.ymax.setText(_number_text(safe_number(self.ymax.text()) * ratio))
+            self._sync_plot()
+            if self._selected_result_entry() is not None: self.plot_selected()
+        except ValueError as exc:
+            blocker = QtCore.QSignalBlocker(self.unit); self.unit.setCurrentText(old); del blocker; self.statusBar().showMessage(str(exc))
 
     def populate(self) -> None:
         self._building = True
         model = self.project["model"]; geometry = model["geometry"]; deformation = model.get("deformation", {})
-        self.lattice.setCurrentText(model.get("lattice", "triangular")); self.actual_a.setValue(float(model.get("actual_lattice_constant_m") or 400e-9) * 1e9); self.background_n.setValue(np.sqrt(float(geometry.get("epsilon_background", 7.29)))); self.basis_policy.setCurrentText(model.get("basis_policy", "auto")); self.deformation.setCurrentText(deformation.get("kind", "none")); self.factor.setValue(float(deformation.get("factor", 1))); self.angle.setValue(float(deformation.get("angle_degrees", 0)))
-        calculation = self._selected_calculation()["parameters"]
-        index = self.operation.findData(calculation.get("operation")); self.operation.setCurrentIndex(max(0, index)); self.qx.setValue(float(calculation.get("qpoint", [0, 0])[0])); self.qy.setValue(float(calculation.get("qpoint", [0, 0])[1])); self.band.setValue(int(calculation.get("band_one_based", 2))); self.first_band.setValue(int(calculation.get("berry_first_band", 2))); self.last_band.setValue(int(calculation.get("berry_last_band", 3))); self.gmax.setValue(float(calculation.get("gmax", 2))); self.numeig.setValue(int(calculation.get("numeig", 3))); self.pol.setCurrentText(calculation.get("polarization", "te")); self.samples.setValue(int(calculation.get("samples_per_segment", 16))); self.grid_size.setValue(int(calculation.get("grid_size", 8))); self.efs_grid.setValue(int(calculation.get("efs_grid_size", 5))); self.berry_step.setValue(float(calculation.get("berry_step", .02)))
-        style = self.project["plot"]; self.unit.setCurrentText(style.get("frequency_unit", "Normalized")); self.band_lines.setChecked(bool(style.get("band_line", True))); self.band_markers.setChecked(bool(style.get("band_markers", False))); self.grid.setChecked(bool(style.get("grid", True))); self.legend.setChecked(bool(style.get("legend", True))); self.colorbar.setChecked(bool(style.get("colorbar", True))); self.sample_centers.setChecked(bool(style.get("show_sample_centers", False))); self.render_mode.setCurrentIndex(max(0, self.render_mode.findData(style.get("berry_render_mode", "sample_cells")))); self.cmap.setCurrentText(style.get("cmap", "RdBu_r")); self.width.setValue(int(style.get("width_px", 900))); self.height.setValue(int(style.get("height_px", 600))); self.dpi.setValue(int(style.get("dpi", 100)))
+        state = self.project.setdefault("ui_state", {})
+        length_unit = state.get("length_unit", "nm"); representation = state.get("material_representation", "n")
+        self.lattice.setCurrentText(model.get("lattice", "triangular")); self.length_unit.setCurrentText(length_unit); self.actual_a.setText("" if model.get("actual_lattice_constant_m") is None else _number_text(float(model["actual_lattice_constant_m"]) / LENGTH_UNITS[length_unit])); self.material_rep.setCurrentText(representation); self.background_material.setText(_number_text(editor_value(float(geometry.get("epsilon_background", 7.29)), representation))); self.basis_policy.setCurrentText(model.get("basis_policy", "auto")); self.deformation.setCurrentText(deformation.get("kind", "none")); self.factor.setText(_number_text(deformation.get("factor", 1))); self.angle.setText(_number_text(deformation.get("angle_degrees", 0)))
+        basis = np.asarray(model.get("direct_basis", [[.5, .5], [np.sqrt(3)/2, -np.sqrt(3)/2]]), dtype=float).reshape(-1)
+        affine = np.asarray(deformation.get("linear", model.get("affine", {}).get("linear", np.eye(2))), dtype=float).reshape(-1)
+        translation = deformation.get("translation", model.get("affine", {}).get("translation", [0, 0]))
+        for edit, value in zip(self.basis_edits, basis): edit.setText(_number_text(value))
+        for edit, value in zip(self.affine_edits, affine): edit.setText(_number_text(value))
+        self.tx.setText(_number_text(translation[0])); self.ty.setText(_number_text(translation[1])); self.geometry_scale.setText(_number_text(model.get("lattice_constant", 1)))
+        self.advanced.setChecked(bool(state.get("advanced_expanded", False)))
+        self._lattice_changed(); self._deformation_changed()
+        self._load_calculation_controls()
+        selected_result = self._selected_result_entry(); style = {**self.project["plot"], **(selected_result.get("plot", {}) if selected_result else {})}; self.unit.setCurrentText(style.get("frequency_unit", "Normalized")); self.band_lines.setChecked(bool(style.get("band_line", True))); self.band_markers.setChecked(bool(style.get("band_markers", False))); self.grid.setChecked(bool(style.get("grid", True))); self.legend.setChecked(bool(style.get("legend", True))); self.colorbar.setChecked(bool(style.get("colorbar", True))); self.sample_centers.setChecked(bool(style.get("show_sample_centers", False))); self.render_mode.setCurrentIndex(max(0, self.render_mode.findData(style.get("berry_render_mode", "sample_cells")))); self.cmap.setCurrentText(style.get("cmap", "RdBu_r")); self.width.setValue(int(style.get("width_px", 900))); self.height.setValue(int(style.get("height_px", 600))); self.dpi.setValue(int(style.get("dpi", 100)))
+        self.title_edit.setText(str(style.get("title", ""))); self.x_label_edit.setText(str(style.get("x_label", ""))); self.y_label_edit.setText(str(style.get("y_label", "")))
+        xlimits, ylimits = style.get("x_limits"), style.get("y_limits")
+        self.xmin.setText("" if not xlimits else _number_text(xlimits[0])); self.xmax.setText("" if not xlimits else _number_text(xlimits[1])); self.ymin.setText("" if not ylimits else _number_text(ylimits[0])); self.ymax.setText("" if not ylimits else _number_text(ylimits[1]))
+        self.linewidth.setValue(float(style.get("linewidth", 1.5))); self.marker_size.setValue(float(style.get("marker_size", 4))); self.component.setValue(int(style.get("component_index", 0))); self.field_quantity.setCurrentText(style.get("field_quantity", "energy_density")); self.vmin.setText("" if style.get("berry_vmin") is None else _number_text(style["berry_vmin"])); self.vmax.setText("" if style.get("berry_vmax") is None else _number_text(style["berry_vmax"])); self.interpolation_resolution.setValue(int(style.get("interpolation_resolution", 160))); self.efs_levels.setText(", ".join(_number_text(value) for value in style.get("efs_levels") or []))
         self._building = False
-        self._populate_tree(); self.refresh_geometry(); self._update_title()
+        self._populate_tree(); self._update_plot_visibility(); self.refresh_geometry(); self._update_title()
 
     def _selected_calculation(self) -> dict[str, Any]:
         selected = self.project.get("selected_node", {}).get("id")
         return next((item for item in self.project["calculations"] if item["id"] == selected), self.project["calculations"][0])
 
+    def _load_calculation_controls(self) -> None:
+        calculation = self._selected_calculation()["parameters"]
+        widgets = [self.operation, self.qx, self.qy, self.band, self.first_band, self.last_band, self.gmax, self.numeig, self.pol, self.path, self.samples, self.field_grid, self.grid_size, self.efs_grid, self.berry_step, self.berry_target, self.berry_sampling, self.source_result, self.frequency_window, self.frequency_samples, self.response_weights, self.occupation, self.plot_after]
+        blockers = [QtCore.QSignalBlocker(widget) for widget in widgets]
+        try:
+            index = self.operation.findData(calculation.get("operation")); self.operation.setCurrentIndex(max(0, index))
+            qpoint = calculation.get("qpoint", [0, 0]); self.qx.setValue(float(qpoint[0])); self.qy.setValue(float(qpoint[1]))
+            self.band.setValue(int(calculation.get("band_one_based", 2))); self.first_band.setValue(int(calculation.get("berry_first_band", 2))); self.last_band.setValue(int(calculation.get("berry_last_band", 3)))
+            self.gmax.setValue(float(calculation.get("gmax", 2))); self.numeig.setValue(int(calculation.get("numeig", 3))); self.pol.setCurrentText(calculation.get("polarization", "te")); self.path.setCurrentIndex(max(0, self.path.findData(calculation.get("path", "identity"))))
+            self.samples.setValue(int(calculation.get("samples_per_segment", 16))); self.field_grid.setValue(int(calculation.get("grid_size", 8))); self.grid_size.setValue(int(calculation.get("grid_size", 8))); self.efs_grid.setValue(int(calculation.get("efs_grid_size", 5))); self.berry_step.setValue(float(calculation.get("berry_step", .02)))
+            self.berry_target.setCurrentIndex(max(0, self.berry_target.findData(calculation.get("berry_target_mode", "single_band")))); self.berry_sampling.setCurrentIndex(max(0, self.berry_sampling.findData(calculation.get("sampling_mode", "single_plaquette"))))
+            self._populate_berry_sources(calculation.get("berry_record_path"))
+            self.frequency_window.setText(", ".join(_number_text(value) for value in calculation.get("frequency_window") or [])); self.frequency_samples.setText(", ".join(_number_text(value) for value in calculation.get("frequency_samples") or [])); self.response_weights.setText(", ".join(_number_text(value) for value in calculation.get("response_weights") or [])); self.occupation.setText(", ".join(_number_text(value) for value in calculation.get("occupation") or [])); self.plot_after.setChecked(bool(calculation.get("plot_after", True)))
+        finally:
+            del blockers
+        self._update_calculation_visibility()
+
+    def _populate_berry_sources(self, selected: str | None = None) -> None:
+        blocker = QtCore.QSignalBlocker(self.source_result); self.source_result.clear(); self.source_result.addItem("No source selected", None)
+        for result in reversed(self.project.get("results", [])):
+            if result.get("calculation_snapshot", {}).get("operation") != "berry": continue
+            reference = result.get("record_reference", {}); path = reference.get("path")
+            label = self._result_label(result, available=True)
+            self.source_result.addItem(label, path)
+        index = self.source_result.findData(selected); self.source_result.setCurrentIndex(max(0, index)); del blocker
+
     def _populate_tree(self) -> None:
+        selected = self.project.get("selected_node", {}); blocker = QtCore.QSignalBlocker(self.tree)
         self.tree.clear(); model = QtWidgets.QTreeWidgetItem(["Model / Geometry"]); model.setData(0, QtCore.Qt.ItemDataRole.UserRole, ("geometry", "geometry")); self.tree.addTopLevelItem(model)
         calculations = QtWidgets.QTreeWidgetItem(["Calculations"]); self.tree.addTopLevelItem(calculations)
         for entry in self.project["calculations"]:
@@ -332,42 +673,110 @@ class StudioWindow(QtWidgets.QMainWindow):
             group = groups.get(operation)
             if group is None:
                 group = QtWidgets.QTreeWidgetItem([OPERATIONS.get(operation, operation)]); results.addChild(group); groups[operation] = group
-            path = result.get("record_reference", {}).get("path", "unavailable")
-            item = QtWidgets.QTreeWidgetItem([Path(path).name]); item.setData(0, QtCore.Qt.ItemDataRole.UserRole, ("result", result["id"])); group.addChild(item)
+            item = QtWidgets.QTreeWidgetItem([self._result_label(result)]); item.setData(0, QtCore.Qt.ItemDataRole.UserRole, ("result", result["id"])); group.addChild(item)
         self.tree.expandAll()
+        iterator = QtWidgets.QTreeWidgetItemIterator(self.tree)
+        while iterator.value():
+            item = iterator.value(); data = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+            if data == (selected.get("kind"), selected.get("id")): self.tree.setCurrentItem(item); break
+            iterator += 1
+        del blocker
+
+    def _result_label(self, result: dict[str, Any], available: bool | None = None) -> str:
+        calculation = result.get("calculation_snapshot", {}); operation = calculation.get("operation", "result")
+        reference = result.get("record_reference", {}); stamp = str(reference.get("created_at") or Path(reference.get("path", "result")).name[:19]).replace("T", " ")
+        geometry = result.get("model_snapshot", {}).get("name") or result.get("model_snapshot", {}).get("geometry", {}).get("name", "Geometry")
+        if operation == "berry":
+            target = f"band {calculation.get('band_one_based', '?')}" if calculation.get("berry_target_mode") == "single_band" else f"bands {calculation.get('berry_first_band', '?')}–{calculation.get('berry_last_band', '?')}"
+            detail = f"{target}, grid={calculation.get('grid_size', '?')}, gmax={calculation.get('gmax', '?')}"
+        elif operation == "band_structure": detail = f"gmax={calculation.get('gmax', '?')}, samples={calculation.get('samples_per_segment', '?')}"
+        elif operation == "efs": detail = f"bands={calculation.get('composite_bands_one_based', '?')}, grid={calculation.get('efs_grid_size', '?')}"
+        elif operation == "fields_energy": detail = f"bands={calculation.get('composite_bands_one_based', '?')}, grid={calculation.get('grid_size', '?')}"
+        elif operation == "frequency_at_k": detail = f"band={calculation.get('band_one_based', '?')}, q={calculation.get('qpoint', '?')}"
+        else: detail = "geometric" if not calculation.get("response_weights") and not calculation.get("occupation") else "physical weighting"
+        status = "unavailable" if available is False else "available"
+        return f"{stamp} · {geometry} · {detail} · {status}"
 
     def _tree_selected(self, current, _previous) -> None:
         if current is None or current.data(0, QtCore.Qt.ItemDataRole.UserRole) is None: return
         kind, identity = current.data(0, QtCore.Qt.ItemDataRole.UserRole)
         self.project["selected_node"] = {"kind": kind, "id": identity}
         if kind == "geometry": self.settings_tabs.setCurrentWidget(self.model_page); self.central_tabs.setCurrentWidget(self.geometry_tabs)
-        elif kind == "calculation": self.settings_tabs.setCurrentWidget(self.calc_page); self.populate()
+        elif kind == "calculation":
+            self.settings_tabs.setCurrentWidget(self.calc_page)
+            self._load_calculation_controls()
         else:
-            result = next(item for item in self.project["results"] if item["id"] == identity); self.project["selected_result"] = result["record_reference"]["path"]; self.plot_selected(); self.central_tabs.setCurrentWidget(self.result_canvas)
+            result = next(item for item in self.project["results"] if item["id"] == identity); self.project["selected_result"] = result["record_reference"]["path"]; self._load_plot_controls({**self.project["plot"], **result.get("plot", {})}); self.plot_selected(); self.central_tabs.setCurrentWidget(self.result_canvas)
 
     def _sync_model(self) -> None:
-        model = self.project["model"]; model["lattice"] = self.lattice.currentText(); model["actual_lattice_constant_m"] = self.actual_a.value() * 1e-9; model["geometry"]["epsilon_background"] = self.background_n.value() ** 2; model["basis_policy"] = self.basis_policy.currentText(); model.setdefault("deformation", {}).update({"kind": self.deformation.currentText(), "factor": self.factor.value(), "angle_degrees": self.angle.value()}); model["name"] = model_name(model["lattice"], _motifs(model)); model["geometry"]["name"] = model["name"]
+        if self._building: return
+        model = self.project["model"]; geometry = model["geometry"]
+        lattice = self.lattice.currentText(); scale = safe_number(self.geometry_scale.text())
+        if scale <= 0: raise ValueError("Geometry scale must be positive")
+        if lattice == "triangular": direct = [[.5, .5], [np.sqrt(3)/2, -np.sqrt(3)/2]]
+        elif lattice == "square": direct = [[1, 0], [0, 1]]
+        else: direct = np.asarray([safe_number(edit.text()) for edit in self.basis_edits]).reshape(2, 2).tolist()
+        kind = self.deformation.currentText(); factor = safe_number(self.factor.text()); angle = safe_number(self.angle.text())
+        if kind == "none": linear = np.eye(2)
+        elif kind == "uniaxial": linear = uniaxial_matrix(factor, angle)
+        else: linear = np.asarray([safe_number(edit.text()) for edit in self.affine_edits]).reshape(2, 2)
+        if abs(float(np.linalg.det(linear))) < 1e-14: raise ValueError("Affine matrix must be non-singular")
+        translation = [safe_number(self.tx.text()), safe_number(self.ty.text())]
+        actual_text = self.actual_a.text().strip()
+        actual_length = None if not actual_text else safe_number(actual_text) * LENGTH_UNITS[self.length_unit.currentText()]
+        if actual_length is not None and actual_length <= 0: raise ValueError("Actual lattice constant must be positive")
+        model.update({"lattice": lattice, "lattice_constant": scale, "actual_lattice_constant_m": actual_length, "direct_basis": direct, "basis_policy": self.basis_policy.currentText()})
+        geometry["epsilon_background"] = epsilon_from_editor(self.background_material.text(), self.material_rep.currentText())
+        deformation = {"kind": kind, "factor": factor, "angle_degrees": angle, "linear": linear.tolist(), "translation": translation}
+        model["deformation"] = deformation; model["affine"] = {"linear": linear.tolist(), "translation": translation}
+        model["name"] = model_name(lattice, _motifs(model)); geometry["name"] = model["name"]
 
     def _sync_calculation(self) -> None:
-        calc = self._selected_calculation(); value = calc["parameters"]; operation = self.operation.currentData(); value.update({"operation": operation, "qpoint": [self.qx.value(), self.qy.value()], "band_one_based": self.band.value(), "berry_first_band": self.first_band.value(), "berry_last_band": self.last_band.value(), "gmax": self.gmax.value(), "numeig": self.numeig.value(), "polarization": self.pol.currentText(), "samples_per_segment": self.samples.value(), "grid_size": self.grid_size.value(), "efs_grid_size": self.efs_grid.value(), "berry_step": self.berry_step.value()}); value["composite_bands_one_based"] = list(range(self.first_band.value(), self.last_band.value() + 1)); value["berry_target_mode"] = "single_band" if self.first_band.value() == self.last_band.value() == self.band.value() else "composite_subspace"; calc["operation"] = operation
+        calc = self._selected_calculation(); value = calc["parameters"]; operation = self.operation.currentData()
+        target_mode = self.berry_target.currentData() or "single_band"
+        bands = [self.band.value()] if operation == "berry" and target_mode == "single_band" else list(range(self.first_band.value(), self.last_band.value() + 1))
+        numeig = max(bands) + 1 if operation == "berry" else self.numeig.value()
+        value.update({"operation": operation, "qpoint": [self.qx.value(), self.qy.value()], "band_one_based": self.band.value(), "berry_first_band": self.first_band.value(), "berry_last_band": self.last_band.value(), "gmax": self.gmax.value(), "numeig": numeig, "polarization": self.pol.currentText(), "path": self.path.currentData() or "identity", "samples_per_segment": self.samples.value(), "grid_size": self.field_grid.value() if operation == "fields_energy" else self.grid_size.value(), "efs_grid_size": self.efs_grid.value(), "berry_step": self.berry_step.value(), "sampling_mode": self.berry_sampling.currentData() or "single_plaquette", "berry_record_path": self.source_result.currentData(), "frequency_window": _optional_numbers(self.frequency_window.text(), count=2), "frequency_samples": _optional_numbers(self.frequency_samples.text()), "response_weights": _optional_numbers(self.response_weights.text()), "occupation": _optional_numbers(self.occupation.text()), "plot_after": self.plot_after.isChecked()})
+        value["composite_bands_one_based"] = bands; value["berry_target_mode"] = target_mode; calc["operation"] = operation
 
     def _sync_plot(self) -> None:
-        self.project["plot"].update({"frequency_unit": self.unit.currentText(), "band_line": self.band_lines.isChecked(), "band_markers": self.band_markers.isChecked(), "grid": self.grid.isChecked(), "legend": self.legend.isChecked(), "berry_render_mode": self.render_mode.currentData(), "cmap": self.cmap.currentText(), "colorbar": self.colorbar.isChecked(), "show_sample_centers": self.sample_centers.isChecked(), "width_px": self.width.value(), "height_px": self.height.value(), "dpi": self.dpi.value()})
+        def limits(low: QtWidgets.QLineEdit, high: QtWidgets.QLineEdit):
+            if not low.text().strip() and not high.text().strip(): return None
+            if not low.text().strip() or not high.text().strip(): raise ValueError("Both axis limit values are required")
+            values = [safe_number(low.text()), safe_number(high.text())]
+            if values[0] >= values[1]: raise ValueError("Axis minimum must be smaller than maximum")
+            return values
+        vmin = None if not self.vmin.text().strip() else safe_number(self.vmin.text()); vmax = None if not self.vmax.text().strip() else safe_number(self.vmax.text())
+        if vmin is not None and vmax is not None and vmin >= vmax: raise ValueError("Color minimum must be smaller than maximum")
+        update = {"frequency_unit": self.unit.currentText(), "band_line": self.band_lines.isChecked(), "band_markers": self.band_markers.isChecked(), "grid": self.grid.isChecked(), "legend": self.legend.isChecked(), "berry_render_mode": self.render_mode.currentData(), "cmap": self.cmap.currentText(), "colorbar": self.colorbar.isChecked(), "show_sample_centers": self.sample_centers.isChecked(), "width_px": self.width.value(), "height_px": self.height.value(), "dpi": self.dpi.value(), "title": self.title_edit.text(), "x_label": self.x_label_edit.text(), "y_label": self.y_label_edit.text(), "x_limits": limits(self.xmin, self.xmax), "y_limits": limits(self.ymin, self.ymax), "linewidth": self.linewidth.value(), "marker_size": self.marker_size.value(), "component_index": self.component.value(), "field_quantity": self.field_quantity.currentText(), "berry_vmin": vmin, "berry_vmax": vmax, "interpolation_resolution": self.interpolation_resolution.value(), "efs_levels": _optional_numbers(self.efs_levels.text())}
+        self.project["plot"].update(update)
+        result = self._selected_result_entry()
+        if result is not None: result.setdefault("plot", {}).update(update)
 
     def _model_changed(self, *_args) -> None:
         if self._building: return
-        self._sync_model(); self.dirty = True; self.statusBar().showMessage("Geometry changed — pending Refresh/Run")
+        try:
+            self._sync_model(); self.dirty = True; self.statusBar().showMessage("Geometry changed — pending Refresh/Run")
+        except ValueError as exc:
+            self.statusBar().showMessage(f"Geometry input: {exc}")
 
     def _calculation_changed(self, *_args) -> None:
         if self._building: return
-        self._sync_calculation(); self.dirty = True; self.statusBar().showMessage("Calculation changed")
+        try:
+            if self.operation.currentData() == "berry":
+                target = self.band.value() if self.berry_target.currentData() == "single_band" else self.last_band.value()
+                blocker = QtCore.QSignalBlocker(self.numeig); self.numeig.setValue(target + 1); del blocker
+            self._sync_calculation(); self._update_calculation_visibility(); self.dirty = True; self.statusBar().showMessage("Calculation changed")
+        except ValueError as exc: self.statusBar().showMessage(f"Calculation input: {exc}")
 
     def _plot_changed(self, *_args) -> None:
         if self._building: return
-        self._sync_plot(); self.dirty = True; self.statusBar().showMessage("Pending plot update")
+        try:
+            self._sync_plot(); self._update_plot_visibility(); self.dirty = True; self.statusBar().showMessage("Pending plot update")
+        except ValueError as exc: self.statusBar().showMessage(f"Plot input: {exc}")
 
     def edit_sites(self) -> None:
-        self._sync_model(); dialog = SitesDialog(self, self.project["model"])
+        self._sync_model(); dialog = SitesDialog(self, self.project["model"], self.material_rep.currentText())
         if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted and dialog.result is not None:
             geometry = self.project["model"]["geometry"]; geometry["motifs"] = dialog.result; geometry["kind"] = dialog.result[0]["kind"]; geometry["radius"] = dialog.result[0]["radius"]; geometry["sides"] = dialog.result[0]["sides"]; geometry["angle_degrees"] = dialog.result[0]["angle_degrees"]; geometry["center"] = dialog.result[0]["center"]; geometry["epsilon_inclusion"] = dialog.result[0]["epsilon"]; self.dirty = True; self.refresh_geometry()
 
@@ -410,9 +819,10 @@ class StudioWindow(QtWidgets.QMainWindow):
         if not available: self.statusBar().showMessage(f"Result unavailable: {reason}"); return
         path = self.project_path.parent / result["record_reference"]["path"]
         try:
-            self.current_view = record_view(path, frequency_unit=self.project["plot"].get("frequency_unit", "Normalized"), component_index=int(self.project["plot"].get("component_index", 0)), field_quantity=self.project["plot"].get("field_quantity", "energy_density"))
+            style = {**self.project["plot"], **result.get("plot", {})}
+            self.current_view = record_view(path, frequency_unit=style.get("frequency_unit", "Normalized"), component_index=int(style.get("component_index", 0)), field_quantity=style.get("field_quantity", "energy_density"))
             pins = result.get("display_state", {}).get("pins", [])
-            self.result_canvas.set_record(self.current_view, self.project["plot"], pins=pins); self.inspector.set_view(self.current_view); self._populate_layers(); self.result_details.setPlainText(json.dumps({"record": str(path), "operation": self.current_view.operation, "summary": self.current_view.summary, "calculation": result.get("calculation_snapshot"), "model": result.get("model_snapshot")}, indent=2, ensure_ascii=False, default=str)); self.central_tabs.setCurrentWidget(self.result_canvas); self.statusBar().showMessage(f"{self.current_view.operation} · {path}")
+            self.result_canvas.set_record(self.current_view, style, pins=pins); self.inspector.set_view(self.current_view); self._populate_layers(); self._update_plot_visibility(self.current_view.operation); self.result_details.setPlainText(json.dumps({"record": str(path), "operation": self.current_view.operation, "summary": self.current_view.summary, "calculation": result.get("calculation_snapshot"), "model": result.get("model_snapshot")}, indent=2, ensure_ascii=False, default=str)); self.central_tabs.setCurrentWidget(self.result_canvas); self.statusBar().showMessage(f"{self.current_view.operation} · {path}")
         except Exception as exc: QtWidgets.QMessageBox.warning(self, "Plot failed", str(exc))
 
     def _canvas_row(self, index: int) -> None:
@@ -427,6 +837,13 @@ class StudioWindow(QtWidgets.QMainWindow):
         rows = self.inspector.selectionModel().selectedRows()
         if rows and self.current_view: QtWidgets.QApplication.clipboard().setText(self.current_view.rows[rows[0].row()].tooltip())
 
+    def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
+        if event.key() == QtCore.Qt.Key.Key_Delete:
+            rows = self.inspector.selectionModel().selectedRows()
+            if rows and rows[0].row() in self.result_canvas.pinned_rows(): self.result_canvas.pin_row(rows[0].row())
+            return
+        super().keyPressEvent(event)
+
     def _populate_layers(self) -> None:
         while self.layers_layout.count() > 1:
             item = self.layers_layout.takeAt(0)
@@ -436,19 +853,36 @@ class StudioWindow(QtWidgets.QMainWindow):
 
     def add_calculation(self) -> None:
         entry = add_calculation(self.project, name="New calculation", operation="frequency_at_k")
-        self.project["selected_node"] = {"kind": "calculation", "id": entry["id"]}; self.dirty = True; self.populate()
+        self.project["selected_node"] = {"kind": "calculation", "id": entry["id"]}; self.dirty = True; self._insert_calculation_item(entry); self._load_calculation_controls()
 
     def copy_calculation(self) -> None:
         source = self._selected_calculation(); entry = copy_calculation(self.project, source["id"])
-        self.project["selected_node"] = {"kind": "calculation", "id": entry["id"]}; self.dirty = True; self.populate()
+        self.project["selected_node"] = {"kind": "calculation", "id": entry["id"]}; self.dirty = True; self._insert_calculation_item(entry); self._load_calculation_controls()
 
     def rename_calculation(self) -> None:
         entry = self._selected_calculation(); name, ok = QtWidgets.QInputDialog.getText(self, "Rename calculation", "Name", text=entry.get("name", "Calculation"))
-        if ok and name.strip(): rename_calculation(self.project, entry["id"], name.strip()); self.dirty = True; self._populate_tree()
+        if ok and name.strip():
+            rename_calculation(self.project, entry["id"], name.strip()); self.dirty = True
+            item = self._tree_item("calculation", entry["id"])
+            if item is not None: item.setText(0, name.strip())
 
     def delete_calculation(self) -> None:
-        try: delete_calculation(self.project, self._selected_calculation()["id"]); self.dirty = True; self.populate()
+        try:
+            identity = self._selected_calculation()["id"]; item = self._tree_item("calculation", identity); delete_calculation(self.project, identity); self.dirty = True
+            if item is not None and item.parent() is not None: item.parent().removeChild(item)
+            self._load_calculation_controls()
         except ValueError as exc: QtWidgets.QMessageBox.warning(self, "Cannot delete calculation", str(exc))
+
+    def _tree_item(self, kind: str, identity: str) -> QtWidgets.QTreeWidgetItem | None:
+        iterator = QtWidgets.QTreeWidgetItemIterator(self.tree)
+        while iterator.value():
+            item = iterator.value()
+            if item.data(0, QtCore.Qt.ItemDataRole.UserRole) == (kind, identity): return item
+            iterator += 1
+        return None
+
+    def _insert_calculation_item(self, entry: dict[str, Any]) -> None:
+        root = self.tree.topLevelItem(1); item = QtWidgets.QTreeWidgetItem([entry.get("name", OPERATIONS.get(entry["operation"], entry["operation"]))]); item.setData(0, QtCore.Qt.ItemDataRole.UserRole, ("calculation", entry["id"])); root.addChild(item); root.setExpanded(True); self.tree.setCurrentItem(item)
 
     def apply_preset_file(self) -> None:
         directory = self.project_path.parent / "presets" if self.project_path else ROOT / "presets"
@@ -490,7 +924,7 @@ class StudioWindow(QtWidgets.QMainWindow):
         figures = path / "figures"; figures.mkdir(parents=True, exist_ok=True)
         target, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Export current view", str(figures / "result.png"), "Images (*.png *.pdf *.svg)")
         if not target: return
-        style = dict(self.project["plot"]); style["x_limits"], style["y_limits"] = self.result_canvas.view_limits()
+        style = {**self.project["plot"], **result.get("plot", {})}; style["x_limits"], style["y_limits"] = self.result_canvas.view_limits()
         figure = plot_record(path, style); export_figure(figure, target, width_px=style["width_px"], height_px=style["height_px"], dpi=style["dpi"]); self.statusBar().showMessage(f"Exported {target}")
 
     def run(self) -> None:
@@ -499,7 +933,8 @@ class StudioWindow(QtWidgets.QMainWindow):
             if self.project_path is None and not self.save_as(): return
             self._sync_model(); self._sync_calculation(); self._sync_plot(); validate_project(self.project); self.save()
             request = build_worker_request(self.project, self.project_path); handle, name = tempfile.mkstemp(prefix="legumephc-qt-", suffix=".json"); import os; os.close(handle); self.request_path = Path(name); self.request_path.write_text(json.dumps(request), encoding="utf-8"); self.active_request = deepcopy(request)
-            self.process = QtCore.QProcess(self); self.process.setWorkingDirectory(str(ROOT)); self.process.setProgram(sys.executable); self.process.setArguments(["-m", "legumephc.studio.worker", "--request", str(self.request_path)]); self.process.readyReadStandardOutput.connect(self._read_worker); self.process.readyReadStandardError.connect(self._read_worker_error); self.process.finished.connect(self._worker_finished); self.stdout_buffer = ""; self.run_started = time.monotonic(); self.progress.setRange(0, 0); self.progress_label.setText(f"Starting {request['calculation']['operation']}"); self.process.start()
+            self.process = QtCore.QProcess(self); self.process.setWorkingDirectory(str(ROOT)); self.process.setProgram(sys.executable); self.process.setArguments(["-m", "legumephc.studio.worker", "--request", str(self.request_path)]); self.process.readyReadStandardOutput.connect(self._read_worker); self.process.readyReadStandardError.connect(self._read_worker_error); self.process.finished.connect(self._worker_finished); self.stdout_buffer = ""; self.run_started = time.monotonic(); self.last_worker_error = None; self._cancelling = False; self.progress.setRange(0, 0); self.progress_label.setText(f"Starting {request['calculation']['operation']}"); self.process.start()
+            self.run_button.setEnabled(False); self.cancel_button.setEnabled(True)
         except Exception as exc: QtWidgets.QMessageBox.warning(self, "Run failed", str(exc)); self._cleanup_worker()
 
     def _read_worker(self) -> None:
@@ -512,8 +947,9 @@ class StudioWindow(QtWidgets.QMainWindow):
             if event.get("schema") != EVENT_SCHEMA: continue
             if event.get("completed") is not None and event.get("total"):
                 total = int(event["total"]); completed = int(event["completed"]); self.progress.setRange(0, total); self.progress.setValue(completed); self.progress_label.setText(f"{event.get('phase', event['event'])}: {completed}/{total} · {time.monotonic() - self.run_started:.1f} s")
-            else: self.progress.setRange(0, 0); self.progress_label.setText(str(event.get("message", event["event"])))
+            else: self.progress.setRange(0, 0); self.progress_label.setText(str(event.get("message", event.get("error", event["event"]))))
             if event.get("event") in {"phase", "record_written", "failed"}: self.log.appendPlainText(str(event.get("message", event.get("error", event["event"]))))
+            if event.get("event") == "failed": self.last_worker_error = str(event.get("error", "Worker failed"))
             if event.get("event") == "completed": self._accept_worker_result(event)
 
     def _read_worker_error(self) -> None:
@@ -522,15 +958,18 @@ class StudioWindow(QtWidgets.QMainWindow):
     def _accept_worker_result(self, event: dict[str, Any]) -> None:
         assert self.project_path is not None and self.active_request is not None
         reference = record_reference(Path(event["record_path"]), self.project_path.parent); calculation_id = self.active_request.get("calculation_id", self._selected_calculation()["id"]); result_id = f"result-{len(self.project.get('results', [])) + 1}"
-        self.project["results"].append({"id": result_id, "calculation_id": calculation_id, "record_reference": reference, "model_snapshot": self.active_request["model_snapshot"], "calculation_snapshot": self.active_request["calculation_snapshot"], "plot": deepcopy(self.project["plot"]), "display_state": {"pins": []}}); self.project["selected_result"] = reference["path"]; self.dirty = True; self._populate_tree(); self.plot_selected()
+        self.project["results"].append({"id": result_id, "calculation_id": calculation_id, "record_reference": reference, "model_snapshot": self.active_request["model_snapshot"], "calculation_snapshot": self.active_request["calculation_snapshot"], "plot": deepcopy(self.project["plot"]), "display_state": {"pins": []}}); self.project["selected_result"] = reference["path"]; self.dirty = True; self._populate_tree(); self._populate_berry_sources()
+        if self.active_request["calculation_snapshot"].get("plot_after", True): self.plot_selected()
 
     def _worker_finished(self, exit_code: int, _status) -> None:
-        if exit_code != 0: self.progress_label.setText(f"Worker failed with exit code {exit_code}")
+        if self._cancelling: self.progress_label.setText("Cancelled; exact worker terminated")
+        elif exit_code != 0: self.progress_label.setText(self.last_worker_error or f"Worker failed with exit code {exit_code}")
         else: self.progress.setRange(0, 100); self.progress.setValue(100); self.progress_label.setText(f"Completed in {time.monotonic() - self.run_started:.1f} s")
         self._cleanup_worker()
 
     def cancel(self) -> None:
         if self.process is None: return
+        self._cancelling = True
         self.process.terminate()
         if not self.process.waitForFinished(5000): self.process.kill(); self.process.waitForFinished(5000)
         self.progress.setRange(0, 100); self.progress.setValue(0); self.progress_label.setText("Cancelled; exact worker terminated"); self._cleanup_worker()
@@ -538,6 +977,7 @@ class StudioWindow(QtWidgets.QMainWindow):
     def _cleanup_worker(self) -> None:
         if self.request_path is not None: self.request_path.unlink(missing_ok=True)
         self.request_path = None; self.process = None; self.active_request = None
+        if hasattr(self, "run_button"): self.run_button.setEnabled(True); self.cancel_button.setEnabled(False)
 
     def _confirm_discard(self) -> bool:
         if not self.dirty: return True
@@ -556,6 +996,7 @@ class StudioWindow(QtWidgets.QMainWindow):
 def main(argv: list[str] | None = None) -> int:
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(argv or sys.argv)
     app.setApplicationName("LegumePhC Studio")
+    app.setEffectEnabled(QtCore.Qt.UIEffect.UI_AnimateCombo, False)
     pg.setConfigOptions(antialias=True, background="w", foreground="k")
     window = StudioWindow(); window.show()
     return app.exec()

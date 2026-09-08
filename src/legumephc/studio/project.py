@@ -154,6 +154,9 @@ def new_project(name: str = "Untitled") -> dict[str, Any]:
             "colorbar": True,
             "component_index": 0,
             "field_quantity": "energy_density",
+            "frequency_unit": "Normalized",
+            "interpolation_resolution": 160,
+            "efs_levels": None,
             "x_limits": None,
             "y_limits": None,
     }
@@ -167,7 +170,7 @@ def new_project(name: str = "Untitled") -> dict[str, Any]:
         "selected_node": {"kind": "calculation", "id": "calc-1"},
         "selected_result": None,
         "plot": plot,
-        "ui_state": {"material_representation": "n", "advanced_expanded": False, "active_geometry_tab": "Motif", "selected_motif": "motif-1"},
+        "ui_state": {"material_representation": "n", "length_unit": "nm", "advanced_expanded": False, "active_geometry_tab": "Motif", "selected_motif": "motif-1"},
     })
     return project
 

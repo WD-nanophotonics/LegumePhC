@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -85,3 +86,96 @@ def test_qt_berry_cells_and_colorbar_offscreen(tmp_path):
     assert len(canvas._layer_items["Unqualified"]) == 1
     assert len(canvas._layer_items["Colorbar"]) == 1
     canvas.close(); app.processEvents()
+
+
+def test_qt_site_editor_accepts_expressions_and_adds_centered_honeycomb():
+    from legumephc.motifs import triangular_motifs
+    from legumephc.studio.project import new_project
+    from legumephc.studio.qt_ui import QtWidgets, SitesDialog, StableComboBox
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    dialog = SitesDialog(None, new_project()["model"])
+    shape = dialog.table.cellWidget(0, 1)
+    assert isinstance(shape, StableComboBox)
+    shape.setCurrentText("Triangle")
+    dialog.table.item(0, 2).setText("root(9)/15")
+    dialog.table.item(0, 3).setText("pi*0")
+    dialog._add_site()
+    assert dialog.table.rowCount() == 2
+    expected = triangular_motifs((0.2, 0.2), (0, 0), kind="polygon", sides=3)
+    for row in range(2):
+        motif = dialog._row_motif(row)
+        assert motif["kind"] == "polygon" and motif["sides"] == 3
+        assert motif["radius"] == pytest.approx(0.2)
+        assert motif["center"] == pytest.approx(expected[row]["center"])
+    dialog.table.item(1, 5).setText("1/sqrt(3)")
+    assert dialog._row_motif(1)["center"][1] == pytest.approx(1 / np.sqrt(3))
+    dialog.close(); app.processEvents()
+
+
+def test_qt_calculation_selection_is_local_and_berry_fields_are_dynamic():
+    from legumephc.studio.project import add_calculation, new_project
+    from legumephc.studio.qt_ui import QtCore, QtWidgets, StudioWindow
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    project = new_project()
+    berry = add_calculation(project, name="Berry", operation="berry")
+    project["selected_node"] = {"kind": "calculation", "id": berry["id"]}
+    window = StudioWindow(project)
+    window.populate = lambda: pytest.fail("calculation selection must not rebuild the full window")
+    target = None
+    iterator = QtWidgets.QTreeWidgetItemIterator(window.tree)
+    while iterator.value():
+        item = iterator.value()
+        if item.data(0, QtCore.Qt.ItemDataRole.UserRole) == ("calculation", berry["id"]):
+            target = item; break
+        iterator += 1
+    window._tree_selected(target, None)
+    window.berry_target.setCurrentIndex(window.berry_target.findData("single_band"))
+    window.band.setValue(4); window._calculation_changed()
+    assert window.numeig.value() == 5
+    assert window.calc_form.isRowVisible(window.band)
+    assert not window.calc_form.isRowVisible(window.first_band)
+    window.berry_sampling.setCurrentIndex(window.berry_sampling.findData("first_bz_grid")); window._berry_controls_changed()
+    assert window.calc_form.isRowVisible(window.grid_size)
+    assert not window.calc_form.isRowVisible(window.qx)
+    window.dirty = False; window.close(); app.processEvents()
+
+
+def test_qt_geometry_expression_sync_and_stable_combobox():
+    from legumephc.studio.qt_ui import QtWidgets, StableComboBox, StudioWindow
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    window = StudioWindow()
+    assert all(isinstance(combo, StableComboBox) for combo in window.findChildren(QtWidgets.QComboBox))
+    window.actual_a.setText("root(160000)")
+    window.length_unit.setCurrentText("nm")
+    window.background_material.setText("sqrt(7.29)")
+    window.geometry_scale.setText("1")
+    window._sync_model()
+    assert window.project["model"]["actual_lattice_constant_m"] == pytest.approx(400e-9)
+    assert window.project["model"]["geometry"]["epsilon_background"] == pytest.approx(7.29)
+    window.dirty = False; window.close(); app.processEvents()
+
+
+def test_qt_real_worker_band_and_berry_smoke(tmp_path):
+    from legumephc.studio.project import new_project, save_project
+    from legumephc.studio.qt_ui import QtCore, QtWidgets, StudioWindow
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    project = new_project(); path = tmp_path / "smoke.legumephc-studio.json"; save_project(path, project)
+    window = StudioWindow(project, path)
+
+    def run_and_wait():
+        window.run()
+        assert window.process is not None
+        loop = QtCore.QEventLoop(); window.process.finished.connect(loop.quit); QtCore.QTimer.singleShot(60_000, loop.quit); loop.exec()
+        assert window.process is None, "worker did not finish within the smoke-test timeout"
+        assert window.last_worker_error is None, window.last_worker_error
+
+    window.operation.setCurrentIndex(window.operation.findData("band_structure")); window.samples.setValue(2); window.gmax.setValue(2); window.numeig.setValue(3); window.plot_after.setChecked(False)
+    run_and_wait()
+    window.operation.setCurrentIndex(window.operation.findData("berry")); window.berry_target.setCurrentIndex(window.berry_target.findData("single_band")); window.band.setValue(2); window.berry_sampling.setCurrentIndex(window.berry_sampling.findData("single_plaquette")); window.plot_after.setChecked(False)
+    run_and_wait()
+    assert [result["calculation_snapshot"]["operation"] for result in window.project["results"]] == ["band_structure", "berry"]
+    window.dirty = False; window.close(); app.processEvents()

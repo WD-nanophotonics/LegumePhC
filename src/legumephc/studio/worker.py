@@ -44,7 +44,7 @@ def build_worker_request(project: dict[str, Any], project_path: str | Path) -> d
 
 
 def _selected_berry_source(request: dict[str, Any]) -> dict[str, Any]:
-    selected = request.get("selected_result") or request["calculation"].get("berry_record_path")
+    selected = request["calculation"].get("berry_record_path") or request.get("selected_result")
     reference = next((item for item in request.get("records", []) if item.get("path") == selected), None)
     if reference is None or reference.get("identity", {}).get("operation") not in {"berry", "solve_berry"}:
         raise ValueError("BCD requires a selected compatible Berry result")
