@@ -73,6 +73,68 @@ class StableComboBox(QtWidgets.QComboBox):
         self.setMinimumContentsLength(8)
 
 
+class OptionalExpressionCell(QtWidgets.QStackedWidget):
+    """A persistent expression editor with an explicit not-applicable state."""
+
+    def __init__(self, text: str, parent: QtWidgets.QWidget | None = None):
+        super().__init__(parent)
+        self.editor = QtWidgets.QLineEdit(text)
+        self.not_applicable = QtWidgets.QLabel("—")
+        self.not_applicable.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.not_applicable.setToolTip("Not applicable for this shape")
+        self.addWidget(self.editor)
+        self.addWidget(self.not_applicable)
+
+    def set_applicable(self, applicable: bool) -> None:
+        self.setCurrentWidget(self.editor if applicable else self.not_applicable)
+
+
+class SidesCell(QtWidgets.QStackedWidget):
+    """A regular-polygon sides editor or an explicit fixed-value label."""
+
+    def __init__(self, value: int, parent: QtWidgets.QWidget | None = None):
+        super().__init__(parent)
+        self.editor = QtWidgets.QSpinBox()
+        self.editor.setRange(3, 10_000)
+        self.editor.setValue(max(3, int(value or 6)))
+        self.fixed = QtWidgets.QLabel("—")
+        self.fixed.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.addWidget(self.editor)
+        self.addWidget(self.fixed)
+
+    def set_shape(self, shape: str) -> None:
+        if shape == "Regular polygon":
+            self.setCurrentWidget(self.editor)
+            self.setToolTip("Number of sides for the regular polygon")
+            return
+        labels = {"Triangle": "3 (fixed)", "Square": "4 (fixed)"}
+        self.fixed.setText(labels.get(shape, "—"))
+        self.fixed.setToolTip("Fixed by shape" if shape in labels else "Not applicable for this shape")
+        self.setCurrentWidget(self.fixed)
+
+
+class PersistentEditorTable(QtWidgets.QTableWidget):
+    """A table whose embedded editors also select their containing row."""
+
+    def setCellWidget(self, row: int, column: int, widget: QtWidgets.QWidget) -> None:
+        super().setCellWidget(row, column, widget)
+        widget.installEventFilter(self)
+        for child in widget.findChildren(QtWidgets.QWidget):
+            child.installEventFilter(self)
+
+    def eventFilter(self, watched: QtCore.QObject, event: QtCore.QEvent) -> bool:
+        if event.type() in {QtCore.QEvent.Type.FocusIn, QtCore.QEvent.Type.MouseButtonPress} and isinstance(watched, QtWidgets.QWidget):
+            owner = watched
+            while owner.parentWidget() is not None and owner.parentWidget() is not self.viewport():
+                owner = owner.parentWidget()
+            if owner.parentWidget() is self.viewport():
+                index = self.indexAt(owner.pos() + QtCore.QPoint(1, 1))
+                if index.isValid():
+                    flags = QtCore.QItemSelectionModel.SelectionFlag.ClearAndSelect | QtCore.QItemSelectionModel.SelectionFlag.Rows
+                    self.setCurrentCell(index.row(), index.column(), flags)
+        return super().eventFilter(watched, event)
+
+
 def _motifs(case: dict[str, Any]) -> list[dict[str, Any]]:
     geometry = case["geometry"]
     return deepcopy(geometry.get("motifs") or [{
@@ -95,8 +157,10 @@ class SitesDialog(QtWidgets.QDialog):
         self.result: list[dict[str, Any]] | None = None
         self.case = case
         self.representation = representation
-        self.table = QtWidgets.QTableWidget(0, len(self.COLUMNS))
+        self.table = PersistentEditorTable(0, len(self.COLUMNS))
         self.table.setHorizontalHeaderLabels(self.COLUMNS)
+        self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.horizontalHeaderItem(6).setText("n" if representation == "n" else "ε")
         self.table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
         for motif in _motifs(case):
@@ -125,51 +189,83 @@ class SitesDialog(QtWidgets.QDialog):
         values = [motif.get("name", f"Site {row + 1}"), shape, motif.get("radius", 0.2), motif.get("angle_degrees", 0.0), *motif.get("center", [0.5, 0.0]), editor_value(float(motif.get("epsilon", 1.0)), self.representation), motif.get("sides", 6)]
         for column, value in enumerate(values):
             if column == 1:
-                combo = StableComboBox(); combo.addItems(SHAPE_CHOICES); combo.setCurrentText(str(value)); combo.currentTextChanged.connect(lambda _text, r=row: self._shape_changed(r)); self.table.setCellWidget(row, column, combo)
+                combo = StableComboBox(); combo.addItems(SHAPE_CHOICES); combo.setCurrentText(str(value)); combo.currentTextChanged.connect(lambda _text, source=combo: self._shape_changed_for(source)); self.table.setCellWidget(row, column, combo)
+            elif column == 3:
+                cell = OptionalExpressionCell(_number_text(value)); cell.editor.returnPressed.connect(self.focusNextChild); self.table.setCellWidget(row, column, cell)
+            elif column == 7:
+                self.table.setCellWidget(row, column, SidesCell(int(value or 6)))
             else:
-                self.table.setItem(row, column, QtWidgets.QTableWidgetItem(_number_text(value) if isinstance(value, (float, np.floating)) else str(value)))
+                editor = QtWidgets.QLineEdit(_number_text(value) if isinstance(value, (float, np.floating)) else str(value))
+                editor.returnPressed.connect(self.focusNextChild)
+                self.table.setCellWidget(row, column, editor)
         self._shape_changed(row)
+
+    def _shape_changed_for(self, source: QtWidgets.QWidget) -> None:
+        index = self.table.indexAt(source.pos())
+        if index.isValid():
+            self._shape_changed(index.row())
 
     def _shape_changed(self, row: int) -> None:
         if row >= self.table.rowCount():
             return
         shape = self.table.cellWidget(row, 1).currentText()
-        angle = self.table.item(row, 3)
-        sides = self.table.item(row, 7)
-        angle.setFlags(angle.flags() | QtCore.Qt.ItemFlag.ItemIsEditable if shape != "Circle" else angle.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)
-        sides.setFlags(sides.flags() | QtCore.Qt.ItemFlag.ItemIsEditable if shape == "Regular polygon" else sides.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)
-        if shape in {"Triangle", "Square"}:
-            sides.setText("3" if shape == "Triangle" else "4")
-        elif shape == "Circle":
-            angle.setText("0")
-            sides.setText("0")
+        self.table.cellWidget(row, 3).set_applicable(shape != "Circle")
+        self.table.cellWidget(row, 7).set_shape(shape)
+
+    def _line_edit(self, row: int, column: int) -> QtWidgets.QLineEdit:
+        widget = self.table.cellWidget(row, column)
+        if isinstance(widget, OptionalExpressionCell):
+            return widget.editor
+        if not isinstance(widget, QtWidgets.QLineEdit):
+            raise TypeError(f"row {row + 1}, column {column + 1} is not an expression field")
+        return widget
+
+    def _clear_errors(self) -> None:
+        for editor in self.table.findChildren(QtWidgets.QLineEdit):
+            editor.setStyleSheet("")
+            editor.setToolTip("")
+        for spinner in self.table.findChildren(QtWidgets.QSpinBox):
+            spinner.setStyleSheet("")
+            spinner.setToolTip("")
+
+    @staticmethod
+    def _mark_error(widget: QtWidgets.QWidget, message: str) -> None:
+        widget.setStyleSheet("border: 1px solid #e53935;")
+        widget.setToolTip(message)
 
     def _row_motif(self, row: int) -> dict[str, Any]:
         field = "shape"
         try:
             shape = self.table.cellWidget(row, 1).currentText()
             field = "sides"
-            raw_sides = safe_number(self.table.item(row, 7).text()) if shape == "Regular polygon" else self.table.item(row, 7).text()
-            if shape == "Regular polygon" and not float(raw_sides).is_integer():
-                raise ValueError("must be an integer")
+            sides_cell = self.table.cellWidget(row, 7)
+            raw_sides = sides_cell.editor.value() if shape == "Regular polygon" else {"Circle": 0, "Triangle": 3, "Square": 4}[shape]
             kind, sides = canonical_shape(shape, raw_sides)
             values = {}
             for column, name in ((2, "radius"), (3, "rotation"), (4, "center x"), (5, "center y"), (6, "n")):
                 field = name
-                values[name] = safe_number(self.table.item(row, column).text())
+                editor = self._line_edit(row, column)
+                try:
+                    values[name] = 0.0 if shape == "Circle" and name == "rotation" else safe_number(editor.text())
+                except Exception as exc:
+                    message = f"Site {row + 1} · {name}: {exc}"
+                    self._mark_error(editor, message)
+                    raise ValueError(message) from exc
             if values["radius"] <= 0:
-                field = "radius"; raise ValueError("must be positive")
+                field = "radius"; editor = self._line_edit(row, 2); self._mark_error(editor, "Radius must be positive"); raise ValueError(f"Site {row + 1} · radius: must be positive")
             if values["n"] <= 0:
-                field = "n"; raise ValueError("must be positive")
+                field = "n"; editor = self._line_edit(row, 6); self._mark_error(editor, "Material must be positive"); raise ValueError(f"Site {row + 1} · n: must be positive")
             return {
-                "name": self.table.item(row, 0).text().strip() or f"Site {row + 1}",
+                "name": self._line_edit(row, 0).text().strip() or f"Site {row + 1}",
                 "kind": kind, "radius": values["radius"], "sides": sides,
                 "angle_degrees": 0.0 if kind == "circle" else values["rotation"],
                 "center": [values["center x"], values["center y"]],
                 "epsilon": epsilon_from_editor(values["n"], self.representation),
             }
         except Exception as exc:
-            raise ValueError(f"Site {row + 1}, {field}: {exc}") from exc
+            if str(exc).startswith(f"Site {row + 1} ·"):
+                raise
+            raise ValueError(f"Site {row + 1} · {field}: {exc}") from exc
 
     def _add_site(self) -> None:
         new = {"name": f"Site {self.table.rowCount() + 1}", "kind": "circle", "radius": 0.2, "angle_degrees": 0.0, "center": [0.5, 0.0], "epsilon": 1.0, "sides": 0}
@@ -183,9 +279,9 @@ class SitesDialog(QtWidgets.QDialog):
                     first["center"] = locations[0]["center"]
                     first["name"] = "Site A"
                     new = {**first, "name": "Site B", "center": locations[1]["center"]}
-                    self.table.item(0, 0).setText(first["name"])
-                    self.table.item(0, 4).setText(_number_text(first["center"][0]))
-                    self.table.item(0, 5).setText(_number_text(first["center"][1]))
+                    self._line_edit(0, 0).setText(first["name"])
+                    self._line_edit(0, 4).setText(_number_text(first["center"][0]))
+                    self._line_edit(0, 5).setText(_number_text(first["center"][1]))
             except ValueError:
                 pass
         self._add_row(new)
@@ -209,10 +305,11 @@ class SitesDialog(QtWidgets.QDialog):
             center = np.asarray([0.5, 0.5]) * float(case.get("lattice_constant", 1.0))
         else:
             center = (basis[:, 0] + basis[:, 1]) / 2
-        self.table.item(row, 4).setText(f"{center[0]:.12g}"); self.table.item(row, 5).setText(f"{center[1]:.12g}")
+        self._line_edit(row, 4).setText(f"{center[0]:.12g}"); self._line_edit(row, 5).setText(f"{center[1]:.12g}")
 
     def _accept(self) -> None:
         try:
+            self._clear_errors()
             if self.table.rowCount() < 1:
                 raise ValueError("add at least one site")
             motifs = []
@@ -229,7 +326,7 @@ class CentersDialog(QtWidgets.QDialog):
 
     def __init__(self, parent: QtWidgets.QWidget, centers: list[list[float]]):
         super().__init__(parent); self.setWindowTitle("Explicit Berry centers"); self.resize(420, 320); self.result = None
-        self.table = QtWidgets.QTableWidget(0, 2); self.table.setHorizontalHeaderLabels(["qₓ", "qᵧ"]); self.table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
+        self.table = PersistentEditorTable(0, 2); self.table.setHorizontalHeaderLabels(["qₓ", "qᵧ"]); self.table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch); self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers); self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         for center in centers: self._add(center)
         add = QtWidgets.QPushButton("Add center"); remove = QtWidgets.QPushButton("Remove selected")
         add.clicked.connect(lambda: self._add([0.0, 0.0])); remove.clicked.connect(self._remove)
@@ -240,7 +337,8 @@ class CentersDialog(QtWidgets.QDialog):
 
     def _add(self, center: list[float]) -> None:
         row = self.table.rowCount(); self.table.insertRow(row)
-        for column, value in enumerate(center): self.table.setItem(row, column, QtWidgets.QTableWidgetItem(_number_text(value)))
+        for column, value in enumerate(center):
+            editor = QtWidgets.QLineEdit(_number_text(value)); editor.returnPressed.connect(self.focusNextChild); self.table.setCellWidget(row, column, editor)
 
     def _remove(self) -> None:
         for row in sorted({item.row() for item in self.table.selectedIndexes()}, reverse=True): self.table.removeRow(row)
@@ -248,7 +346,17 @@ class CentersDialog(QtWidgets.QDialog):
     def _accept(self) -> None:
         try:
             if self.table.rowCount() < 1: raise ValueError("Add at least one center")
-            self.result = [[safe_number(self.table.item(row, column).text()) for column in range(2)] for row in range(self.table.rowCount())]
+            for editor in self.table.findChildren(QtWidgets.QLineEdit): editor.setStyleSheet(""); editor.setToolTip("")
+            result = []
+            for row in range(self.table.rowCount()):
+                values = []
+                for column, label in enumerate(("qₓ", "qᵧ")):
+                    editor = self.table.cellWidget(row, column)
+                    try: values.append(safe_number(editor.text()))
+                    except Exception as exc:
+                        message = f"Center {row + 1} · {label}: {exc}"; editor.setStyleSheet("border: 1px solid #e53935;"); editor.setToolTip(message); raise ValueError(message) from exc
+                result.append(values)
+            self.result = result
             self.accept()
         except Exception as exc: self.error.setText(str(exc))
 

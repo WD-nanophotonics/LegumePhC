@@ -91,15 +91,18 @@ def test_qt_berry_cells_and_colorbar_offscreen(tmp_path):
 def test_qt_site_editor_accepts_expressions_and_adds_centered_honeycomb():
     from legumephc.motifs import triangular_motifs
     from legumephc.studio.project import new_project
-    from legumephc.studio.qt_ui import QtWidgets, SitesDialog, StableComboBox
+    from legumephc.studio.qt_ui import OptionalExpressionCell, QtWidgets, SidesCell, SitesDialog, StableComboBox
 
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     dialog = SitesDialog(None, new_project()["model"])
     shape = dialog.table.cellWidget(0, 1)
     assert isinstance(shape, StableComboBox)
+    assert isinstance(dialog.table.cellWidget(0, 2), QtWidgets.QLineEdit)
+    assert isinstance(dialog.table.cellWidget(0, 3), OptionalExpressionCell)
+    assert isinstance(dialog.table.cellWidget(0, 7), SidesCell)
     shape.setCurrentText("Triangle")
-    dialog.table.item(0, 2).setText("root(9)/15")
-    dialog.table.item(0, 3).setText("pi*0")
+    dialog._line_edit(0, 2).setText("root(9)/15")
+    dialog._line_edit(0, 3).setText("pi*0")
     dialog._add_site()
     assert dialog.table.rowCount() == 2
     expected = triangular_motifs((0.2, 0.2), (0, 0), kind="polygon", sides=3)
@@ -108,8 +111,75 @@ def test_qt_site_editor_accepts_expressions_and_adds_centered_honeycomb():
         assert motif["kind"] == "polygon" and motif["sides"] == 3
         assert motif["radius"] == pytest.approx(0.2)
         assert motif["center"] == pytest.approx(expected[row]["center"])
-    dialog.table.item(1, 5).setText("1/sqrt(3)")
+    dialog._line_edit(1, 5).setText("1/sqrt(3)")
     assert dialog._row_motif(1)["center"][1] == pytest.approx(1 / np.sqrt(3))
+    dialog.close(); app.processEvents()
+
+
+def test_qt_site_shape_controls_are_explicit_and_preserve_values():
+    from legumephc.studio.project import new_project
+    from legumephc.studio.qt_ui import QtWidgets, SitesDialog
+    from PySide6 import QtCore, QtTest
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    dialog = SitesDialog(None, new_project()["model"])
+    shape = dialog.table.cellWidget(0, 1)
+    rotation = dialog.table.cellWidget(0, 3)
+    sides = dialog.table.cellWidget(0, 7)
+    assert rotation.currentWidget() is rotation.not_applicable
+    assert sides.fixed.text() == "—"
+    shape.setCurrentText("Triangle")
+    rotation.editor.setText("pi/3")
+    assert rotation.currentWidget() is rotation.editor
+    assert sides.fixed.text() == "3 (fixed)"
+    assert dialog._row_motif(0)["angle_degrees"] == pytest.approx(np.pi / 3)
+    shape.setCurrentText("Circle")
+    shape.setCurrentText("Triangle")
+    assert rotation.editor.text() == "pi/3"
+    shape.setCurrentText("Regular polygon")
+    sides.editor.setValue(7)
+    shape.setCurrentText("Square")
+    assert sides.fixed.text() == "4 (fixed)"
+    shape.setCurrentText("Regular polygon")
+    assert sides.editor.value() == 7
+    dialog.show(); app.processEvents()
+    radius = dialog._line_edit(0, 2)
+    QtTest.QTest.mouseClick(radius, QtCore.Qt.MouseButton.LeftButton, pos=radius.rect().center()); app.processEvents()
+    assert app.focusWidget() is radius
+    assert dialog.table.currentRow() == 0
+    QtTest.QTest.keyClick(radius, QtCore.Qt.Key.Key_A, QtCore.Qt.KeyboardModifier.ControlModifier)
+    QtTest.QTest.keyClicks(radius, "1/root(3)")
+    assert radius.text() == "1/root(3)"
+    dialog.close(); app.processEvents()
+
+
+def test_qt_explicit_centers_use_persistent_expression_editors():
+    from legumephc.studio.qt_ui import CentersDialog, QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    dialog = CentersDialog(None, [[0.0, 0.0]])
+    assert isinstance(dialog.table.cellWidget(0, 0), QtWidgets.QLineEdit)
+    assert dialog.table.item(0, 0) is None
+    dialog.table.cellWidget(0, 0).setText("1/root(3)")
+    dialog.table.cellWidget(0, 1).setText("pi/6")
+    dialog._accept()
+    assert dialog.result[0] == pytest.approx([1 / np.sqrt(3), np.pi / 6])
+    dialog.close(); app.processEvents()
+
+
+def test_qt_site_validation_marks_the_exact_persistent_editor():
+    from legumephc.studio.project import new_project
+    from legumephc.studio.qt_ui import QtWidgets, SitesDialog
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    dialog = SitesDialog(None, new_project()["model"])
+    radius = dialog._line_edit(0, 2)
+    radius.setText("not_a_number")
+    dialog._accept()
+    assert dialog.result is None
+    assert "Site 1 · radius" in dialog.error.text()
+    assert "border" in radius.styleSheet()
+    assert "Site 1 · radius" in radius.toolTip()
     dialog.close(); app.processEvents()
 
 
