@@ -76,7 +76,9 @@ geometry, TE/TM solves, and reports symmetry `none`. The read-only
 
 ## Phase D Studio
 
-Launch the compact Tkinter Studio directly with the pinned Windows interpreter:
+Launch the native PySide6/PyQtGraph Studio directly from PyCharm with the
+shared `Studio` run configuration.  The temporary `studio_legacy_tk.py`
+launcher remains available only during the Qt transition.
 
 ## Direct study entrypoints
 
@@ -105,6 +107,14 @@ separate `.legumephc-preset.json` format and never contain result references.
 Preview refreshes are solver-free; formal calculations run in one exact child
 process and can be cancelled without a background service. User-facing band
 labels are one-based and are mapped to the core's explicit zero-based API.
+
+The Qt Result view snaps to immutable raw samples even when Band markers are
+hidden. Hover shows the current frequency unit with six significant digits;
+click pins the value, `Copy Values` copies it, and the Data Inspector selects
+the same raw row. Berry interpolation remains a display option and its hover
+readout is explicitly tied to the nearest raw sample. Matplotlib remains the
+publication/export renderer, so resizing the interactive window does not
+change the configured export dimensions or DPI.
 
 ## Phase E acceptance
 

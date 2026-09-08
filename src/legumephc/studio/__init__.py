@@ -1,4 +1,4 @@
-"""Small Windows-native Tkinter Studio for LegumePhC projects."""
+"""Windows-native Qt Studio and persistent LegumePhC project helpers."""
 
 from .project import (
     PROJECT_SUFFIX,

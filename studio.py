@@ -1,6 +1,6 @@
-"""Thin launcher for the Windows-native LegumePhC Tkinter Studio."""
+"""Thin launcher for the Windows-native LegumePhC Qt Studio."""
 
-from legumephc.studio.ui import main
+from legumephc.studio.qt_ui import main
 
 
 if __name__ == "__main__":
