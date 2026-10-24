@@ -9,6 +9,7 @@ import numpy as np
 from .geometry import (
     DIRECT_BASIS,
     GeometrySpec,
+    closure_center,
     identity_path,
     point_group_operations,
     polygon_vertices,
@@ -225,14 +226,17 @@ def solve_bands(
     elif model.point_group in {"C3", "C4"}:
         operations = point_group_operations(model.point_group)
         if model.closure_qpoints is not None:
-            closure_qpoints = model.closure_qpoints
+            closure_qpoints = np.asarray(model.closure_qpoints, dtype=float)
         else:
-            seed = qpoints[0]
-            closure_qpoints = np.asarray([operation @ seed for operation in operations])
+            # The orbit of an exact fixed point (zero rounding in the lattice
+            # shifts), so the basis never depends on which q comes first.
+            center = closure_center(model.effective_lattice, model.point_group, qpoints)
+            closure_qpoints = np.asarray([operation @ center for operation in operations])
         result = solve_pwe_point_group_closed_basis(
             model.effective_geometry, qpoints, seed_gmax=gmax, closure_qpoints=closure_qpoints,
             linear_operations=operations, numeig=numeig, pol=pol, lattice=model.effective_lattice, progress=progress,
         )
+        result["closure_qpoints"] = closure_qpoints
     else:
         result = solve_pwe(model.effective_geometry, qpoints, gmax=gmax, numeig=numeig, pol=pol, lattice=model.effective_lattice, progress=progress)
     result["qpoints"] = qpoints

@@ -33,7 +33,7 @@ models are rejected rather than assigned a symmetry they do not have.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 import math
 from pathlib import Path
 from typing import Any, Callable
@@ -42,7 +42,6 @@ import numpy as np
 
 from .berry import _gap_margin, _qualification, _unique_points
 from .diagnostics import rank1_wilson
-from .geometry import point_group_operations
 from .records import create_model_record
 from .solver import solve_bands
 
@@ -231,12 +230,6 @@ def solve_valley_chern(
     if numeig < max(bands) + 2:
         raise ValueError("numeig must include the band above the highest target band (for its gap)")
 
-    if model.basis_policy not in {"native", "circular"} and model.closure_qpoints is None:
-        # Close the basis on the C3 orbit of Γ (zero lattice shift): a pure
-        # rotation closure, identical for K and K' and for every grid node.
-        # The solve_bands default (orbit of the first q point) is meant for
-        # high-symmetry orbits and would make the basis depend on node order.
-        model = replace(model, closure_qpoints=np.zeros((len(point_group_operations("C3")), 2)))
     plaquettes = _plaquettes(domain.cell_centers, stencil)
     area = stencil * stencil
     unique, inverse = _unique_points(plaquettes)
@@ -310,7 +303,7 @@ def solve_valley_chern(
         "bands": per_band,
         "raw_unsymmetrized": True,
         "cutoff": {"gmax": float(gmax), "closed_gvec_count": solved.get("closed_gvec_count"), "basis_policy": model.basis_policy,
-                   "closure_seed": None if model.closure_qpoints is None else np.asarray(model.closure_qpoints).tolist()},
+                   "closure_qpoints": None if solved.get("closure_qpoints") is None else np.asarray(solved["closure_qpoints"]).tolist()},
         "polarization": pol.lower(),
     }
     polygons = np.full((cells, max(len(p) for p in domain.cell_polygons), 2), np.nan)

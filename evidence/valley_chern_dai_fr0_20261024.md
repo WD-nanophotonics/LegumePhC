@@ -105,10 +105,10 @@ nor MePhC can qualify under the 0.02 gap gate.
 * Inner product: LegumePhC uses the TE plane-wave H coefficients (exact
   Hermitian form for μ = 1); legacy E9 used MPB's energy-weighted E+H overlap.
 * Sign: one unexplained sign between the MPB and LegumePhC pipelines (above).
-* `solve_bands`' default closure seed (orbit of the first q point) is only
-  correct for high-symmetry orbits; `solve_valley_chern` seeds at Γ. Other
-  grid-sampled operations (e.g. Studio first-BZ Berry maps) should be
-  reviewed for the same issue.
+* `solve_bands`' former default closure seed (orbit of the first q point)
+  was order-dependent for grids; fixed for all operations on 2026-10-24
+  (`evidence/closure_seed_fix_20261024.md`). These valley values are
+  unchanged by the fix.
 * FR0.4 (rounded triangle) needs an arbitrary-polygon motif, not yet in
   `GeometrySpec`.
 

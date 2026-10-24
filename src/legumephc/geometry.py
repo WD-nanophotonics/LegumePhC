@@ -178,6 +178,55 @@ def point_group_operations(point_group: str) -> tuple[np.ndarray, ...]:
     return tuple(rotation(360.0 * index / order) for index in range(order))
 
 
+def point_group_fixed_points(lattice: Lattice2D, point_group: str) -> np.ndarray:
+    """Reduced q with R·q ≡ q (mod reciprocal lattice) for every group operation.
+
+    One representative per primitive reciprocal cell: Γ, K and K′ for C3 on a
+    triangular lattice; Γ and M for C4 on a square lattice.
+    """
+
+    reciprocal = np.asarray(lattice.reciprocal_basis_reduced, dtype=float)
+    inverse = np.linalg.inv(reciprocal)
+    operations = point_group_operations(point_group)
+    fixed = []
+    for m1 in range(12):
+        for m2 in range(12):
+            candidate = reciprocal @ np.array([m1 / 12.0, m2 / 12.0])
+            shifts = [inverse @ (operation @ candidate - candidate) for operation in operations]
+            if all(np.allclose(shift, np.rint(shift), atol=1e-9) for shift in shifts):
+                fixed.append(candidate)
+    return np.asarray(fixed, dtype=float)
+
+
+def closure_center(lattice: Lattice2D, point_group: str, qpoints: np.ndarray, *, locality: float = 0.5) -> np.ndarray:
+    """Exact centre for the default point-group-closed basis of a q set.
+
+    A closure orbit must map q_{i+1} - R q_i onto reciprocal-lattice vectors
+    exactly, which only holds for point-group fixed points.  When every
+    requested q lies within ``locality`` × (fixed-point spacing) of the fixed
+    point nearest their centroid (an orbit or plaquette around K, a single
+    point near M, ...), that fixed point is the centre — reproducing the
+    historical first-point orbit for such local requests.  Otherwise (paths,
+    grids, half-BZ domains) the centre is Γ, i.e. a pure rotation closure that
+    does not depend on q order.
+    """
+
+    points = np.asarray(qpoints, dtype=float).reshape(-1, 2)
+    reciprocal = np.asarray(lattice.reciprocal_basis_reduced, dtype=float)
+    images = np.asarray([
+        fixed + reciprocal @ np.array([n1, n2], dtype=float)
+        for fixed in point_group_fixed_points(lattice, point_group)
+        for n1 in range(-2, 3) for n2 in range(-2, 3)
+    ])
+    centroid = points.mean(axis=0)
+    center = images[np.argmin(np.linalg.norm(images - centroid, axis=1))]
+    separations = np.linalg.norm(images[:, None, :] - images[None, :, :], axis=2)
+    spacing = float(np.min(separations[separations > 1e-9]))
+    if float(np.max(np.linalg.norm(points - center, axis=1))) <= locality * spacing:
+        return center
+    return np.zeros(2)
+
+
 def point_group_geometry_residual(spec: GeometrySpec, lattice: Lattice2D, point_group: str) -> float:
     """Measure motif and lattice compatibility with a finite cyclic group."""
 
