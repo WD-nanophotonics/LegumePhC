@@ -19,6 +19,8 @@ PRESET_SCHEMA = "legumephc-studio-preset-v1"
 PROJECT_SUFFIX = ".legumephc-studio.json"
 PRESET_SUFFIX = ".legumephc-preset.json"
 
+OPERATION_IDS = frozenset({"frequency_at_k", "band_structure", "fields_energy", "efs", "berry", "berry_curvature_dipole", "valley_chern"})
+
 _RESULT_OPERATION_ALIASES = {
     "solve_bands": "band_structure",
     "compute_field_observables": "fields_energy",
@@ -127,6 +129,11 @@ def new_project(name: str = "Untitled") -> dict[str, Any]:
             "response_weights": None,
             "occupation": None,
             "berry_record_path": None,
+            "valley": "K'",
+            "delta_k": 0.10,
+            "delta_gamma": 0.10,
+            "grid_denominator": 36,
+            "gap_floor": 0.02,
         }
     plot = {
             "width_px": 900,
@@ -253,7 +260,7 @@ def _migrate_berry_parameters(calculation: dict[str, Any]) -> None:
 def _validate_calculation(calculation: dict[str, Any]) -> None:
     _require(isinstance(calculation, dict), "project calculation must be an object")
     operation = calculation.get("operation")
-    _require(operation in {"frequency_at_k", "band_structure", "fields_energy", "efs", "berry", "berry_curvature_dipole"}, "unsupported calculation operation")
+    _require(operation in OPERATION_IDS, "unsupported calculation operation")
     _require(str(calculation.get("polarization", "")).lower() in {"te", "tm"}, "polarization must be TE or TM")
     _require(int(calculation.get("numeig", 0)) > 0 and float(calculation.get("gmax", 0)) > 0, "calculation cutoff settings must be positive")
     _require(int(calculation.get("band_one_based", 0)) >= 1, "band_one_based must be one-based")
@@ -281,6 +288,12 @@ def _validate_calculation(calculation: dict[str, Any]) -> None:
             _require(int(calculation.get("grid_size", 0)) >= 1, "Berry grid_size must be positive")
         if mode == "explicit_centers":
             _require(isinstance(calculation.get("centers", []), list), "Berry centers must be a list")
+    if operation == "valley_chern":
+        _require(calculation.get("valley", "K'") in {"K", "K'"}, "valley must be K or K'")
+        _require(float(calculation.get("delta_k", 0.1)) >= 0 and float(calculation.get("delta_gamma", 0.1)) >= 0, "valley truncations must be non-negative")
+        _require(int(calculation.get("grid_denominator", 36)) >= 1, "valley grid denominator must be positive")
+        _require(float(calculation.get("gap_floor", 0.02)) >= 0, "gap floor must be non-negative")
+        _require(int(calculation.get("berry_last_band", 1)) >= int(calculation.get("berry_first_band", 1)) >= 1, "valley bands need an increasing one-based range")
     if operation == "berry_curvature_dipole":
         if calculation.get("berry_record_path") is not None:
             _require(isinstance(calculation.get("berry_record_path"), str), "BCD Berry record path must be explicit")
@@ -313,7 +326,7 @@ def validate_project(project: dict[str, Any]) -> dict[str, Any]:
             _require(isinstance(result.get("model_snapshot"), dict) and isinstance(result.get("calculation_snapshot"), dict), "results must contain model and calculation snapshots")
             snapshot_operation = result["calculation_snapshot"].get("operation")
             reference_operation = _canonical_result_operation(result.get("record_reference", {}).get("identity", {}).get("operation"))
-            _require(snapshot_operation in {"frequency_at_k", "band_structure", "fields_energy", "efs", "berry", "berry_curvature_dipole"}, "result calculation snapshot has an unsupported operation")
+            _require(snapshot_operation in OPERATION_IDS, "result calculation snapshot has an unsupported operation")
             if reference_operation is not None:
                 _require(reference_operation == snapshot_operation, "result record identity disagrees with its calculation snapshot")
             _require("geometry" in result["model_snapshot"] and "operation" not in result["model_snapshot"], "result model snapshot is malformed")

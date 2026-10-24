@@ -220,3 +220,6 @@ button.danger { background: var(--error); border-color: var(--error); color: #ff
 .calc-header .actions { display: flex; gap: 4px; }
 .calc-header .actions button { padding: 2px 7px; }
 .section-title.first { margin-top: 0; padding-top: 0; border-top: none; }
+
+.valley-table td { padding: 2px 6px; font-variant-numeric: tabular-nums; }
+.valley-table .warn { color: var(--warn); }

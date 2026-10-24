@@ -7,7 +7,8 @@ export type Operation =
   | "fields_energy"
   | "efs"
   | "berry"
-  | "berry_curvature_dipole";
+  | "berry_curvature_dipole"
+  | "valley_chern";
 
 export interface Motif {
   name?: string;
@@ -180,6 +181,24 @@ export interface RecordViewData {
   arrays: Record<string, unknown>;
   frequency_factor?: number;
   sample_cells?: number[][][];
+  valley?: { valley: string; bands: ValleyBandSummary[]; exclusions?: number[][][] };
+}
+
+export interface ValleyEstimate {
+  status: string;
+  valley_chern: number | null;
+  qualified_samples: number;
+  total_samples: number;
+  failure_reasons: Record<string, number>;
+}
+
+export interface ValleyBandSummary {
+  band_zero_based: number;
+  status: string;
+  valley_chern: number | null;
+  min_gap: number;
+  SOURCE_GRID_MIDPOINT: ValleyEstimate;
+  CLIPPED_CELL: ValleyEstimate;
 }
 
 export interface PreviewData {

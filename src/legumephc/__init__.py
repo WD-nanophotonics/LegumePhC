@@ -8,9 +8,10 @@ from .model import Model2D
 from .observables import compute_field_observables
 from .solver import frequency_at_k, solve_bands
 from .efs import solve_efs
+from .valley import solve_valley_chern, valley_domain
 
 __all__ = [
     "Affine2D", "BenchmarkConfig", "GeometrySpec", "Lattice2D", "Model2D",
     "compute_berry_dipole", "compute_field_observables", "frequency_at_k", "geometry_spec",
-    "first_bz_vertices", "first_bz_vertices_physical", "first_bz_plaquettes", "load_benchmark", "m7_orbit", "solve_bands", "solve_berry", "solve_efs", "square_circle_spec",
+    "first_bz_vertices", "first_bz_vertices_physical", "first_bz_plaquettes", "load_benchmark", "m7_orbit", "solve_bands", "solve_berry", "solve_efs", "solve_valley_chern", "square_circle_spec", "valley_domain",
 ]

@@ -292,6 +292,7 @@ OPERATIONS = {
     "efs": "EFS",
     "fields_energy": "Fields / Energy",
     "berry_curvature_dipole": "Berry Curvature Dipole",
+    "valley_chern": "Valley Chern (half BZ)",
 }
 
 
@@ -314,8 +315,8 @@ def normalize_calculation(parameters: dict[str, Any]) -> dict[str, Any]:
         bands = list(range(first, last + 1))
     value["composite_bands_one_based"] = bands
     value["berry_target_mode"] = target_mode
-    if operation == "berry":
-        value["numeig"] = max(bands) + 1
+    if operation in {"berry", "valley_chern"}:
+        value["numeig"] = max(bands) + 1  # one-based: the band above the highest target
     value["polarization"] = str(value.get("polarization", "te")).lower()
     return value
 

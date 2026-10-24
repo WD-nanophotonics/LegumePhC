@@ -33,11 +33,11 @@ threshold as `HISTORICAL_ENGINEERING_POLICY`, not
 
 ## For LegumePhC
 
-There is no valley-Chern operation yet. A port should:
-- reuse `berry.first_bz_plaquettes` restricted to the K half-BZ;
-- keep the `RANK1_WITHHELD` gap/link/branch gates;
-- treat 0.02 as a reported parameter, not a law;
-- report the qualified-cell coverage next to every value, as above.
+Ported on 2026-10-24 as `legumephc.solve_valley_chern` (Studio study type
+"Valley Chern (half BZ)"). It reproduces this domain and both estimators
+exactly, keeps the gap/link/branch gates with 0.02 as a reported parameter,
+and reports coverage next to every value. FR0 results and the comparison with
+the values above are in `evidence/valley_chern_dai_fr0_20261024.md`.
 
 ## Provenance
 

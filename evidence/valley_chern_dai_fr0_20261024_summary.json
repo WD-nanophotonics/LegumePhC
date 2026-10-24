@@ -1,0 +1,608 @@
+{
+  "gmax_ladder": [
+    {
+      "bands": [
+        {
+          "band_zero_based": 0,
+          "clipped_cell": 0.06300505030351157,
+          "failure_reasons": {
+            "branch": 0,
+            "gap": 0,
+            "link": 0
+          },
+          "min_gap": 0.046650325798438474,
+          "qualified": "551/551",
+          "source_grid": 0.06292087889540948,
+          "status": "QUALIFIED_REPORTED"
+        },
+        {
+          "band_zero_based": 1,
+          "clipped_cell": -0.5915593280711128,
+          "failure_reasons": {
+            "branch": 0,
+            "gap": 0,
+            "link": 0
+          },
+          "min_gap": 0.028006773091312775,
+          "qualified": "551/551",
+          "source_grid": -0.5941049538394398,
+          "status": "QUALIFIED_REPORTED"
+        },
+        {
+          "band_zero_based": 2,
+          "clipped_cell": null,
+          "failure_reasons": {
+            "branch": 0,
+            "gap": 14,
+            "link": 0
+          },
+          "min_gap": 0.0058848173194719355,
+          "qualified": "537/551",
+          "source_grid": null,
+          "status": "INCOMPLETE_NOT_REPORTED"
+        }
+      ],
+      "gmax": 4.0,
+      "plane_waves": 73,
+      "record": "20261024T123438.458742Z-valley_chern-4d3f6255",
+      "seconds": 5.3,
+      "stencil": 0.027777777777777776,
+      "valley": "K'"
+    },
+    {
+      "bands": [
+        {
+          "band_zero_based": 0,
+          "clipped_cell": 0.06959996770711922,
+          "failure_reasons": {
+            "branch": 0,
+            "gap": 0,
+            "link": 0
+          },
+          "min_gap": 0.04641765388608243,
+          "qualified": "551/551",
+          "source_grid": 0.06951818224931544,
+          "status": "QUALIFIED_REPORTED"
+        },
+        {
+          "band_zero_based": 1,
+          "clipped_cell": -0.5736272555163837,
+          "failure_reasons": {
+            "branch": 0,
+            "gap": 0,
+            "link": 0
+          },
+          "min_gap": 0.030869206044238873,
+          "qualified": "551/551",
+          "source_grid": -0.5761968015989233,
+          "status": "QUALIFIED_REPORTED"
+        },
+        {
+          "band_zero_based": 2,
+          "clipped_cell": null,
+          "failure_reasons": {
+            "branch": 0,
+            "gap": 14,
+            "link": 0
+          },
+          "min_gap": 0.0057656384861822785,
+          "qualified": "537/551",
+          "source_grid": null,
+          "status": "INCOMPLETE_NOT_REPORTED"
+        }
+      ],
+      "gmax": 5.0,
+      "plane_waves": 121,
+      "record": "20261024T123449.770283Z-valley_chern-7e3d6353",
+      "seconds": 11.3,
+      "stencil": 0.027777777777777776,
+      "valley": "K'"
+    },
+    {
+      "bands": [
+        {
+          "band_zero_based": 0,
+          "clipped_cell": 0.0736432161628873,
+          "failure_reasons": {
+            "branch": 0,
+            "gap": 0,
+            "link": 0
+          },
+          "min_gap": 0.04625736772517641,
+          "qualified": "551/551",
+          "source_grid": 0.07356032948877343,
+          "status": "QUALIFIED_REPORTED"
+        },
+        {
+          "band_zero_based": 1,
+          "clipped_cell": -0.5632521604554669,
+          "failure_reasons": {
+            "branch": 0,
+            "gap": 0,
+            "link": 0
+          },
+          "min_gap": 0.032686073601106924,
+          "qualified": "551/551",
+          "source_grid": -0.5658400458829254,
+          "status": "QUALIFIED_REPORTED"
+        },
+        {
+          "band_zero_based": 2,
+          "clipped_cell": null,
+          "failure_reasons": {
+            "branch": 0,
+            "gap": 16,
+            "link": 0
+          },
+          "min_gap": 0.005708467804279971,
+          "qualified": "535/551",
+          "source_grid": null,
+          "status": "INCOMPLETE_NOT_REPORTED"
+        }
+      ],
+      "gmax": 6.0,
+      "plane_waves": 181,
+      "record": "20261024T123518.207078Z-valley_chern-9f12830d",
+      "seconds": 28.4,
+      "stencil": 0.027777777777777776,
+      "valley": "K'"
+    },
+    {
+      "bands": [
+        {
+          "band_zero_based": 0,
+          "clipped_cell": 0.0764202112284182,
+          "failure_reasons": {
+            "branch": 0,
+            "gap": 0,
+            "link": 0
+          },
+          "min_gap": 0.04614501012040051,
+          "qualified": "551/551",
+          "source_grid": 0.07633484215604341,
+          "status": "QUALIFIED_REPORTED"
+        },
+        {
+          "band_zero_based": 1,
+          "clipped_cell": -0.5561089518824844,
+          "failure_reasons": {
+            "branch": 0,
+            "gap": 0,
+            "link": 0
+          },
+          "min_gap": 0.03397724602434721,
+          "qualified": "551/551",
+          "source_grid": -0.5587071444625419,
+          "status": "QUALIFIED_REPORTED"
+        },
+        {
+          "band_zero_based": 2,
+          "clipped_cell": null,
+          "failure_reasons": {
+            "branch": 0,
+            "gap": 16,
+            "link": 0
+          },
+          "min_gap": 0.005678206229672411,
+          "qualified": "535/551",
+          "source_grid": null,
+          "status": "INCOMPLETE_NOT_REPORTED"
+        }
+      ],
+      "gmax": 7.0,
+      "plane_waves": 253,
+      "record": "20261024T123605.458423Z-valley_chern-de07a940",
+      "seconds": 47.2,
+      "stencil": 0.027777777777777776,
+      "valley": "K'"
+    },
+    {
+      "bands": [
+        {
+          "band_zero_based": 0,
+          "clipped_cell": 0.07841923849481637,
+          "failure_reasons": {
+            "branch": 0,
+            "gap": 0,
+            "link": 0
+          },
+          "min_gap": 0.046045572232895904,
+          "qualified": "551/551",
+          "source_grid": 0.0783343271971457,
+          "status": "QUALIFIED_REPORTED"
+        },
+        {
+          "band_zero_based": 1,
+          "clipped_cell": -0.5512807209441611,
+          "failure_reasons": {
+            "branch": 0,
+            "gap": 0,
+            "link": 0
+          },
+          "min_gap": 0.034911322274928325,
+          "qualified": "551/551",
+          "source_grid": -0.5538809772538739,
+          "status": "QUALIFIED_REPORTED"
+        },
+        {
+          "band_zero_based": 2,
+          "clipped_cell": null,
+          "failure_reasons": {
+            "branch": 0,
+            "gap": 16,
+            "link": 0
+          },
+          "min_gap": 0.005654467823845766,
+          "qualified": "535/551",
+          "source_grid": null,
+          "status": "INCOMPLETE_NOT_REPORTED"
+        }
+      ],
+      "gmax": 8.5,
+      "plane_waves": 337,
+      "record": "20261024T123726.493740Z-valley_chern-31621ea2",
+      "seconds": 81.0,
+      "stencil": 0.027777777777777776,
+      "valley": "K'"
+    },
+    {
+      "bands": [
+        {
+          "band_zero_based": 0,
+          "clipped_cell": 0.07993375132842331,
+          "failure_reasons": {
+            "branch": 0,
+            "gap": 0,
+            "link": 0
+          },
+          "min_gap": 0.04596645169729674,
+          "qualified": "551/551",
+          "source_grid": 0.07984866965475408,
+          "status": "QUALIFIED_REPORTED"
+        },
+        {
+          "band_zero_based": 1,
+          "clipped_cell": -0.5477136478421771,
+          "failure_reasons": {
+            "branch": 0,
+            "gap": 0,
+            "link": 0
+          },
+          "min_gap": 0.035625202080733775,
+          "qualified": "551/551",
+          "source_grid": -0.5503163398552579,
+          "status": "QUALIFIED_REPORTED"
+        },
+        {
+          "band_zero_based": 2,
+          "clipped_cell": null,
+          "failure_reasons": {
+            "branch": 0,
+            "gap": 16,
+            "link": 0
+          },
+          "min_gap": 0.005636503666682724,
+          "qualified": "535/551",
+          "source_grid": null,
+          "status": "INCOMPLETE_NOT_REPORTED"
+        }
+      ],
+      "gmax": 9.5,
+      "plane_waves": 433,
+      "record": "20261024T123950.326977Z-valley_chern-4f51f228",
+      "seconds": 143.8,
+      "stencil": 0.027777777777777776,
+      "valley": "K'"
+    },
+    {
+      "bands": [
+        {
+          "band_zero_based": 0,
+          "clipped_cell": 0.08114020160971874,
+          "failure_reasons": {
+            "branch": 0,
+            "gap": 0,
+            "link": 0
+          },
+          "min_gap": 0.045906458342691525,
+          "qualified": "551/551",
+          "source_grid": 0.08105405903526441,
+          "status": "QUALIFIED_REPORTED"
+        },
+        {
+          "band_zero_based": 1,
+          "clipped_cell": -0.544827938846366,
+          "failure_reasons": {
+            "branch": 0,
+            "gap": 0,
+            "link": 0
+          },
+          "min_gap": 0.03620319235325792,
+          "qualified": "551/551",
+          "source_grid": -0.5474333003848062,
+          "status": "QUALIFIED_REPORTED"
+        },
+        {
+          "band_zero_based": 2,
+          "clipped_cell": null,
+          "failure_reasons": {
+            "branch": 0,
+            "gap": 16,
+            "link": 0
+          },
+          "min_gap": 0.005624510246443948,
+          "qualified": "535/551",
+          "source_grid": null,
+          "status": "INCOMPLETE_NOT_REPORTED"
+        }
+      ],
+      "gmax": 10.5,
+      "plane_waves": 541,
+      "record": "20261024T124317.969021Z-valley_chern-e8821d20",
+      "seconds": 207.6,
+      "stencil": 0.027777777777777776,
+      "valley": "K'"
+    },
+    {
+      "bands": [
+        {
+          "band_zero_based": 0,
+          "clipped_cell": 0.08210445344061716,
+          "failure_reasons": {
+            "branch": 0,
+            "gap": 0,
+            "link": 0
+          },
+          "min_gap": 0.04585264623045471,
+          "qualified": "551/551",
+          "source_grid": 0.08201836250512284,
+          "status": "QUALIFIED_REPORTED"
+        },
+        {
+          "band_zero_based": 1,
+          "clipped_cell": -0.542616453651331,
+          "failure_reasons": {
+            "branch": 0,
+            "gap": 0,
+            "link": 0
+          },
+          "min_gap": 0.03666461440900137,
+          "qualified": "551/551",
+          "source_grid": -0.5452220059846796,
+          "status": "QUALIFIED_REPORTED"
+        },
+        {
+          "band_zero_based": 2,
+          "clipped_cell": null,
+          "failure_reasons": {
+            "branch": 0,
+            "gap": 16,
+            "link": 0
+          },
+          "min_gap": 0.005614163643381853,
+          "qualified": "535/551",
+          "source_grid": null,
+          "status": "INCOMPLETE_NOT_REPORTED"
+        }
+      ],
+      "gmax": 12.0,
+      "plane_waves": 661,
+      "record": "20261024T124900.628638Z-valley_chern-8be58653",
+      "seconds": 342.7,
+      "stencil": 0.027777777777777776,
+      "valley": "K'"
+    }
+  ],
+  "legacy": {
+    "band0": -0.09405797052154485,
+    "band1": 0.5086915675292921,
+    "band2": null,
+    "provenance": "MePhC E9F qp_a frozen endpoint, MPB R64, 1/36 stencil, gap floor 0.02; band2 INCOMPLETE 534/551"
+  },
+  "model": "DaiFR0",
+  "paper": {
+    "band1_one_based": -0.1,
+    "band2_one_based": 0.54,
+    "band3_one_based": -0.43
+  },
+  "point_group": "C3",
+  "stencil_refinement": [
+    {
+      "bands": [
+        {
+          "band_zero_based": 0,
+          "clipped_cell": 0.0736432161628873,
+          "failure_reasons": {
+            "branch": 0,
+            "gap": 0,
+            "link": 0
+          },
+          "min_gap": 0.04625736772517641,
+          "qualified": "551/551",
+          "source_grid": 0.07356032948877343,
+          "status": "QUALIFIED_REPORTED"
+        },
+        {
+          "band_zero_based": 1,
+          "clipped_cell": -0.5632521604554669,
+          "failure_reasons": {
+            "branch": 0,
+            "gap": 0,
+            "link": 0
+          },
+          "min_gap": 0.032686073601106924,
+          "qualified": "551/551",
+          "source_grid": -0.5658400458829254,
+          "status": "QUALIFIED_REPORTED"
+        },
+        {
+          "band_zero_based": 2,
+          "clipped_cell": null,
+          "failure_reasons": {
+            "branch": 0,
+            "gap": 16,
+            "link": 0
+          },
+          "min_gap": 0.005708467804279971,
+          "qualified": "535/551",
+          "source_grid": null,
+          "status": "INCOMPLETE_NOT_REPORTED"
+        }
+      ],
+      "gmax": 6.0,
+      "plane_waves": 181,
+      "record": "20261024T124928.264011Z-valley_chern-2fc1f604",
+      "seconds": 27.6,
+      "stencil": 0.027777777777777776,
+      "valley": "K'"
+    },
+    {
+      "bands": [
+        {
+          "band_zero_based": 0,
+          "clipped_cell": 0.07363935591506887,
+          "failure_reasons": {
+            "branch": 0,
+            "gap": 0,
+            "link": 0
+          },
+          "min_gap": 0.04558982937644912,
+          "qualified": "551/551",
+          "source_grid": 0.07355616525790282,
+          "status": "QUALIFIED_REPORTED"
+        },
+        {
+          "band_zero_based": 1,
+          "clipped_cell": -0.5638273111499331,
+          "failure_reasons": {
+            "branch": 0,
+            "gap": 0,
+            "link": 0
+          },
+          "min_gap": 0.03254871292865891,
+          "qualified": "551/551",
+          "source_grid": -0.5664012656159286,
+          "status": "QUALIFIED_REPORTED"
+        },
+        {
+          "band_zero_based": 2,
+          "clipped_cell": null,
+          "failure_reasons": {
+            "branch": 0,
+            "gap": 6,
+            "link": 0
+          },
+          "min_gap": 0.007142616381721645,
+          "qualified": "545/551",
+          "source_grid": null,
+          "status": "INCOMPLETE_NOT_REPORTED"
+        }
+      ],
+      "gmax": 6.0,
+      "plane_waves": 181,
+      "record": "20261024T125110.264607Z-valley_chern-9af7a531",
+      "seconds": 102.0,
+      "stencil": 0.013888888888888888,
+      "valley": "K'"
+    },
+    {
+      "bands": [
+        {
+          "band_zero_based": 0,
+          "clipped_cell": 0.07363840679400298,
+          "failure_reasons": {
+            "branch": 0,
+            "gap": 0,
+            "link": 0
+          },
+          "min_gap": 0.0454076828506183,
+          "qualified": "551/551",
+          "source_grid": 0.07355514147644553,
+          "status": "QUALIFIED_REPORTED"
+        },
+        {
+          "band_zero_based": 1,
+          "clipped_cell": -0.5639709979680015,
+          "failure_reasons": {
+            "branch": 0,
+            "gap": 0,
+            "link": 0
+          },
+          "min_gap": 0.03259273520536404,
+          "qualified": "551/551",
+          "source_grid": -0.5665414665754966,
+          "status": "QUALIFIED_REPORTED"
+        },
+        {
+          "band_zero_based": 2,
+          "clipped_cell": null,
+          "failure_reasons": {
+            "branch": 0,
+            "gap": 6,
+            "link": 0
+          },
+          "min_gap": 0.007910348358172892,
+          "qualified": "545/551",
+          "source_grid": null,
+          "status": "INCOMPLETE_NOT_REPORTED"
+        }
+      ],
+      "gmax": 6.0,
+      "plane_waves": 181,
+      "record": "20261024T125233.882048Z-valley_chern-fe2ca570",
+      "seconds": 83.6,
+      "stencil": 0.006944444444444444,
+      "valley": "K'"
+    }
+  ],
+  "study": "valley_dai",
+  "time_reversal_partner": {
+    "bands": [
+      {
+        "band_zero_based": 0,
+        "clipped_cell": -0.07364321616288456,
+        "failure_reasons": {
+          "branch": 0,
+          "gap": 0,
+          "link": 0
+        },
+        "min_gap": 0.0462573677251879,
+        "qualified": "551/551",
+        "source_grid": -0.07356032948876831,
+        "status": "QUALIFIED_REPORTED"
+      },
+      {
+        "band_zero_based": 1,
+        "clipped_cell": 0.5632521604554676,
+        "failure_reasons": {
+          "branch": 0,
+          "gap": 0,
+          "link": 0
+        },
+        "min_gap": 0.032686073601108034,
+        "qualified": "551/551",
+        "source_grid": 0.5658400458829244,
+        "status": "QUALIFIED_REPORTED"
+      },
+      {
+        "band_zero_based": 2,
+        "clipped_cell": null,
+        "failure_reasons": {
+          "branch": 0,
+          "gap": 16,
+          "link": 0
+        },
+        "min_gap": 0.005708467804278083,
+        "qualified": "535/551",
+        "source_grid": null,
+        "status": "INCOMPLETE_NOT_REPORTED"
+      }
+    ],
+    "gmax": 6.0,
+    "plane_waves": 181,
+    "record": "20261024T125304.647611Z-valley_chern-8a504b1c",
+    "seconds": 30.8,
+    "stencil": 0.027777777777777776,
+    "valley": "K"
+  }
+}

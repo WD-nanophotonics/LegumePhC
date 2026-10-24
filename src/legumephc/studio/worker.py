@@ -13,7 +13,7 @@ from copy import deepcopy
 
 import numpy as np
 
-from .. import compute_berry_dipole, compute_field_observables, frequency_at_k, solve_bands, solve_berry, solve_efs
+from .. import compute_berry_dipole, compute_field_observables, frequency_at_k, solve_bands, solve_berry, solve_efs, solve_valley_chern
 from ..records import create_record
 from .profile import model_from_case, zero_based_band, zero_based_bands
 from .project import project_records_dir, record_available, validate_project
@@ -113,6 +113,10 @@ def validate_request(request: dict[str, Any]) -> dict[str, Any]:
 
 
 def _selected_bands(calculation: dict[str, Any]) -> tuple[tuple[int, ...], int]:
+    if calculation.get("operation") == "valley_chern":
+        first, last = int(calculation.get("berry_first_band", 1)), int(calculation.get("berry_last_band", 3))
+        bands = zero_based_bands(list(range(first, last + 1)))
+        return bands, max(bands) + 2
     if calculation.get("operation") == "berry":
         mode = calculation.get("berry_target_mode", "single_band")
         if mode == "single_band":
@@ -214,6 +218,15 @@ def execute_request(request: dict[str, Any], *, progress=None) -> dict[str, Any]
             "plaquette_count": len(plaquettes),
             "sampling_lattice": sampling["sampling_lattice"] if sampling_mode == "first_bz_grid" else "explicit_cartesian",
         })
+    elif operation == "valley_chern":
+        result = solve_valley_chern(
+            model, gmax=gmax, valley=calculation.get("valley", "K'"), bands=bands, numeig=numeig, pol=pol,
+            delta_k=float(calculation.get("delta_k", 0.10)), delta_gamma=float(calculation.get("delta_gamma", 0.10)),
+            grid_denominator=int(calculation.get("grid_denominator", 36)), gap_floor=float(calculation.get("gap_floor", 0.02)),
+            convergence_status=calculation.get("convergence_status", "NOT_ASSESSED"), progress=progress,
+        )
+        arrays = {key: value for key, value in result.items() if isinstance(value, np.ndarray)}
+        summary.update(result["summary"])
     elif operation == "berry_curvature_dipole":
         selected = source["reference"]["path"]
         qpoints = source["centers"]

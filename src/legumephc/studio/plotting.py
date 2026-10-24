@@ -259,6 +259,31 @@ def plot_record(record_path: str | Path, style: dict[str, Any] | None = None) ->
         axis.set_aspect("equal", adjustable="box")
         axis.set_xlabel(options["x_label"] or "qₓ")
         axis.set_ylabel(options["y_label"] or "qᵧ")
+    elif operation == "valley_chern" and "cell_polygons" in arrays:
+        curvature = np.asarray(arrays["curvature"], dtype=float)
+        selected = max(0, min(int(options.get("component_index", 0)), curvature.shape[1] - 1))
+        values = curvature[:, selected]
+        cells = [polygon[~np.isnan(polygon[:, 0])] for polygon in np.asarray(arrays["cell_polygons"], dtype=float)]
+        artist = PolyCollection(cells, array=values, cmap=options.get("cmap", "RdBu_r"), norm=_berry_norm(values, options), edgecolors="none", label="clipped grid cells")
+        axis.add_collection(artist)
+        axis.autoscale_view()
+        if options.get("colorbar", True):
+            figure.colorbar(artist, ax=axis, label="Berry curvature (LegumePhC sign)")
+        qualified = np.asarray(arrays["qualified"], dtype=bool)[:, selected]
+        centers = np.asarray(arrays["sample_centers"], dtype=float)
+        if np.any(~qualified):
+            axis.scatter(centers[~qualified, 0], centers[~qualified, 1], marker="x", s=30, linewidths=1.2, color="black", label="unqualified")
+        outline = np.asarray(arrays["domain_outline"], dtype=float)
+        axis.plot(*np.vstack((outline, outline[0])).T, color="black", linewidth=1.0, label="truncated HBZ")
+        for hole in np.asarray(arrays.get("exclusions", np.zeros((0, 6, 2))), dtype=float):
+            axis.plot(*np.vstack((hole, hole[0])).T, color="black", linewidth=0.8, linestyle="--")
+        band = summary.get("bands", [{}] * (selected + 1))[selected]
+        value = band.get("valley_chern")
+        text = f"{summary.get('valley')}  band {int(band.get('band_zero_based', selected)) + 1}:  C_v = " + (f"{value:+.4f}" if value is not None else "not reported (" + str(band.get("SOURCE_GRID_MIDPOINT", {}).get("qualified_samples")) + "/" + str(band.get("SOURCE_GRID_MIDPOINT", {}).get("total_samples")) + " qualified)")
+        axis.text(0.02, 0.98, text, transform=axis.transAxes, va="top", fontsize=9, bbox={"facecolor": "white", "alpha": 0.8, "edgecolor": "none"})
+        axis.set_aspect("equal", adjustable="box")
+        axis.set_xlabel(options["x_label"] or "qₓ")
+        axis.set_ylabel(options["y_label"] or "qᵧ")
     elif operation in {"compute_berry_dipole", "berry_curvature_dipole"} and "qpoints" in arrays:
         color = arrays.get("berry_curvature")
         axis.scatter(arrays["qpoints"][:, 0], arrays["qpoints"][:, 1], c=color if color is not None else None, cmap=options.get("cmap", "viridis"), label="samples")

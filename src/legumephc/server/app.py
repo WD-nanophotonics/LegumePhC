@@ -419,6 +419,10 @@ def create_app(projects_dir: str | Path | None = None, *, worker_cwd: str | Path
             saved = view.config.get("config", view.config)
             length = saved.get("case", {}).get("actual_lattice_constant_m")
             extra["frequency_factor"] = frequency_factor(style.get("frequency_unit", "Normalized"), length)
+        if view.operation == "valley_chern" and "cell_polygons" in view.arrays:
+            polygons = np.asarray(view.arrays["cell_polygons"], dtype=float)
+            extra["sample_cells"] = to_json([polygon[~np.isnan(polygon[:, 0])] for polygon in polygons])
+            extra["valley"] = to_json({"valley": view.summary.get("valley"), "bands": view.summary.get("bands", []), "exclusions": view.arrays.get("exclusions")})
         if view.operation == "berry" and "domain_outline" in view.arrays:
             centers = np.asarray(view.arrays.get("sample_centers", np.mean(view.arrays["plaquettes"], axis=1)), dtype=float)
             extra["sample_cells"] = to_json(sample_cell_polygons(centers, np.asarray(view.arrays["domain_outline"], dtype=float)))

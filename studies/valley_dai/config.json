@@ -1,0 +1,13 @@
+{
+  "description": "Dai et al. FR0 valley photonic crystal: K/K' half-BZ valley Chern numbers, compared with legacy MePhC E9F and the paper anchors.",
+  "geometry": {"lattice": "triangular", "triangle_circumradius_over_a": 0.4, "triangle_angle_degrees": 0.0, "epsilon_background": 7.0225, "epsilon_hole": 1.0},
+  "polarization": "te",
+  "bands_zero_based": [0, 1, 2],
+  "domain": {"delta_k": 0.10, "delta_gamma": 0.10, "grid_denominator": 36},
+  "gap_floor": 0.02,
+  "gmax_ladder": [4, 5, 6, 7, 8.5, 9.5, 10.5, 12],
+  "stencil_refinement": {"gmax": 6, "stencils": [0.027777777777777776, 0.013888888888888888, 0.006944444444444444]},
+  "time_reversal_check_gmax": 6,
+  "legacy_e9f_k_prime": {"band0": -0.09405797052154485, "band1": 0.5086915675292921, "band2": null, "provenance": "MePhC E9F qp_a frozen endpoint, MPB R64, 1/36 stencil, gap floor 0.02; band2 INCOMPLETE 534/551"},
+  "paper_anchors_paper_k": {"band1_one_based": -0.10, "band2_one_based": 0.54, "band3_one_based": -0.43}
+}

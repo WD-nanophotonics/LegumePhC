@@ -45,7 +45,7 @@ def _entry(record: Path, workspace: Path, project: dict, calculation_id: str = "
 
 def test_meta_and_new_document(client):
     meta = client.get("/api/meta").json()
-    assert set(meta["operations"]) == {"frequency_at_k", "band_structure", "fields_energy", "efs", "berry", "berry_curvature_dipole"}
+    assert set(meta["operations"]) == {"frequency_at_k", "band_structure", "fields_energy", "efs", "berry", "berry_curvature_dipole", "valley_chern"}
     assert meta["document_suffix"] == ".lphc"
     created = client.post("/api/documents/new", params={"name": "A"}).json()
     assert created["path"] is None and created["project"]["name"] == "A"

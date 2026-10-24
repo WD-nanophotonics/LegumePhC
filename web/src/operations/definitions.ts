@@ -1,5 +1,6 @@
 // One entry per Studio operation. Adding an operation = one OperationDef here
 // plus its backend implementation (see ./types.ts).
+import type Plotly from "plotly.js";
 import type { CalculationParameters } from "../types";
 import { renderBandLines, renderMap } from "./renderers";
 import type { FieldSpec, OperationDef, StyleSpec } from "./types";
@@ -125,7 +126,46 @@ export const OPERATIONS: OperationDef[] = [
     render: (view, style) => renderMap(view, style, { columns: ["Berry curvature"] }),
     describe: (c) => (c.response_weights || c.occupation ? "physical weighting" : "geometric"),
   },
+  {
+    id: "valley_chern",
+    label: "Valley Chern (half BZ)",
+    fields: [
+      { kind: "select", key: "valley", label: "Valley", options: [["K'", "K′  (−2/3, 0) — legacy/paper domain"], ["K", "K  (2/3, 0)"]] },
+      bandRange(),
+      solver({ numeigReadOnly: true }),
+      {
+        kind: "row", key: "truncation", label: "",
+        fields: [
+          { kind: "number", key: "delta_k", label: "δK (HBZ shrink)", min: 0 },
+          { kind: "number", key: "delta_gamma", label: "δΓ (Γ hexagons)", min: 0 },
+        ],
+      },
+      {
+        kind: "row", key: "grid", label: "",
+        fields: [
+          { kind: "int", key: "grid_denominator", label: "Grid 1/N", min: 1 },
+          { kind: "number", key: "gap_floor", label: "Gap floor", min: 0 },
+        ],
+      },
+      { kind: "note", key: "valley_note", label: "Dai et al. truncated HBZ (FR0: δK=δΓ=0.10; FR0.4: δK=0.05, δΓ=0.13). Rank-1 per band; a band is reported only if every sample passes the gap/link/branch gates. Requires a verified C3 model." },
+    ],
+    style: [
+      { key: "component_index", label: "Band column (0 = first band)", kind: "number", step: 1, min: 0 },
+      ...colourMap, ...colourRange,
+    ],
+    viewKeys: ["component_index"],
+    render: (view, style) => {
+      const rendered = renderMap(view, style, { columns: ["Berry curvature"], sampleCells: true, qualification: true });
+      for (const hole of view.valley?.exclusions ?? []) {
+        const ring = [...hole, hole[0]];
+        rendered.data.push({ type: "scatter", mode: "lines", x: ring.map((p) => p[0]), y: ring.map((p) => p[1]), line: { color: "#555", width: 1, dash: "dash" }, hoverinfo: "skip", showlegend: false } as Plotly.Data);
+      }
+      return rendered;
+    },
+    describe: (c) => `${String(c.valley ?? "K'")} bands ${c.berry_first_band}–${c.berry_last_band}, gmax=${c.gmax}`,
+  },
 ];
+
 
 export const OPERATION_BY_ID: Record<string, OperationDef> = Object.fromEntries(OPERATIONS.map((op) => [op.id, op]));
 

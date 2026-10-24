@@ -159,6 +159,20 @@ def record_view(path: str | Path, *, frequency_unit: str = "Normalized", compone
         qpoint = calculation.get("qpoint", [np.nan, np.nan])
         value = float(np.asarray(arrays["frequency"]).reshape(-1)[0]) * factor
         rows.append(InspectionRow(0.0, value, {"Band": calculation.get("band_one_based", "unknown"), "qₓ": qpoint[0], "qᵧ": qpoint[1], frequency_label(frequency_unit): value}))
+    elif operation == "valley_chern" and "curvature" in arrays:
+        curvature = np.asarray(arrays["curvature"], dtype=float)
+        selected = max(0, min(int(component_index), curvature.shape[1] - 1))
+        centers = np.asarray(arrays["sample_centers"], dtype=float)
+        bands = [int(band) for band in np.asarray(arrays.get("bands", np.arange(curvature.shape[1])))]
+        for index, point in enumerate(centers):
+            rows.append(InspectionRow(float(point[0]), float(point[1]), {
+                "Sample": index, "qₓ": point[0], "qᵧ": point[1], "Band": bands[selected] + 1,
+                "Berry curvature": curvature[index, selected],
+                "Qualified": bool(np.asarray(arrays["qualified"])[index, selected]),
+                "Gap": float(np.asarray(arrays["gaps"])[index, selected]),
+                "Source-grid node": bool(np.asarray(arrays["retained"])[index]),
+                "Clipped weight": float(np.asarray(arrays["cell_weights"])[index]),
+            }))
     elif operation == "berry_curvature_dipole" and "qpoints" in arrays:
         qpoints = np.asarray(arrays["qpoints"], dtype=float)
         curvature = np.asarray(arrays.get("berry_curvature", np.full(len(qpoints), np.nan))).reshape(-1)

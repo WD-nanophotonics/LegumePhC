@@ -42,7 +42,7 @@ Rules for reading them:
 | Local-plaquette vs. global-triangle Wilson correction | Inherited: `evidence/corrected_pilot_20260905.md` |
 | Generic affine models must not inherit C3/C4; BZ by half-plane clipping | Inherited: `Model2D.point_group` (identity-only), `geometry.first_bz_vertices` |
 | Weighted Berry-curvature gradient / dipole functional | Partly: `src/legumephc/dipole.py`; analytic E8A identities not yet ported as tests |
-| Half-BZ valley Chern number | **Open** (no LegumePhC operation yet) |
+| Half-BZ valley Chern number | **Implemented** for FR0: `legumephc.solve_valley_chern`, `evidence/valley_chern_dai_fr0_20261024.md` (magnitudes within 3% of legacy; one cross-pipeline sign unresolved). FR0.4 open. |
 | Rank-3 composite Wilson / composite valley Chern | **Open** (`solve_berry` supports composite rank, no valley integration) |
 | Dai paper benchmark | **Open**; reference numbers below |
 | Local non-uniform affine, mixed phase-space curvature, wavepacket shift | **Open**; contract and gates below |
@@ -50,9 +50,10 @@ Rules for reading them:
 
 ## Open science leads for LegumePhC
 
-1. **Valley Chern over the K half-BZ** with Legume. Use the orbit-closed basis,
-   then compare with the legacy band0 −0.094 / band1 +0.509 values (MPB, R128,
-   threshold 0.02).
+1. ~~Valley Chern over the K half-BZ~~ — done for FR0 (2026-10-24):
+   extrapolated |C_v| 0.091 / 0.523 vs. legacy 0.094 / 0.509. Remaining: a
+   qualified cutoff-convergence rule, the cross-pipeline sign, and FR0.4
+   (needs arbitrary-polygon motifs).
 2. **Rank-3 composite valley Chern** for the FR00 triangular-hole geometry
    (legacy stage-1 value 3.9e-4).
 3. **Affine response**: port the E8A analytic identities as unit tests of
