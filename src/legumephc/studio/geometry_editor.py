@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ast
 import math
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 
@@ -45,8 +45,11 @@ def canonical_shape(choice: str, sides: Any = None) -> tuple[str, int]:
     raise GeometryExpressionError("choose Circle, Triangle, Square, or Regular polygon")
 
 
-def safe_number(value: Any) -> float:
-    """Parse numeric editor text without eval or arbitrary names/calls."""
+def safe_number(value: Any, variables: Mapping[str, float] | None = None) -> float:
+    """Parse numeric editor text without eval or arbitrary names/calls.
+
+    ``variables`` supplies Global Definitions parameters by name.
+    """
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         result = float(value)
     else:
@@ -64,6 +67,10 @@ def safe_number(value: Any) -> float:
                 return float(node.value)
             if isinstance(node, ast.Name) and node.id == "pi":
                 return math.pi
+            if isinstance(node, ast.Name) and variables is not None and node.id in variables:
+                return float(variables[node.id])
+            if isinstance(node, ast.Name):
+                raise GeometryExpressionError(f"unknown parameter: {node.id}")
             if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
                 number = evaluate(node.operand)
                 return number if isinstance(node.op, ast.UAdd) else -number
@@ -87,9 +94,11 @@ def safe_number(value: Any) -> float:
                             return -((-radicand) ** (1.0 / degree))
                         raise GeometryExpressionError("negative values require an odd integer root degree")
                     return radicand ** (1.0 / degree)
-            raise GeometryExpressionError("allowed syntax: numbers, pi, sqrt(), root(), +, -, *, /, **, and parentheses")
+            raise GeometryExpressionError("allowed syntax: numbers, parameters, pi, sqrt(), root(), +, -, *, /, **, and parentheses")
         try:
             result = evaluate(tree)
+        except GeometryExpressionError:
+            raise
         except (ArithmeticError, OverflowError, ValueError) as exc:
             raise GeometryExpressionError("numeric expression is not finite") from exc
     if not math.isfinite(result):
@@ -97,8 +106,8 @@ def safe_number(value: Any) -> float:
     return result
 
 
-def epsilon_from_editor(value: Any, representation: str) -> float:
-    number = safe_number(value)
+def epsilon_from_editor(value: Any, representation: str, variables: Mapping[str, float] | None = None) -> float:
+    number = safe_number(value, variables)
     if representation == "n":
         number = number * number
     if number <= 0 or not math.isfinite(number):
@@ -113,9 +122,9 @@ def editor_value(epsilon: float, representation: str) -> float:
     return math.sqrt(epsilon) if representation == "n" else epsilon
 
 
-def uniaxial_matrix(factor: Any, angle_degrees: Any) -> np.ndarray:
-    factor = safe_number(factor)
-    angle = math.radians(safe_number(angle_degrees))
+def uniaxial_matrix(factor: Any, angle_degrees: Any, variables: Mapping[str, float] | None = None) -> np.ndarray:
+    factor = safe_number(factor, variables)
+    angle = math.radians(safe_number(angle_degrees, variables))
     if factor <= 0:
         raise GeometryExpressionError("uniaxial factor must be positive")
     rotation = np.asarray([[math.cos(angle), -math.sin(angle)], [math.sin(angle), math.cos(angle)]])

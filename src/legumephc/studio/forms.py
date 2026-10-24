@@ -4,20 +4,57 @@ These functions hold the editing semantics that used to live inside the Qt
 window (`_sync_model`, `populate`, and the Sites dialog) so that any client
 (the web Studio today) edits a model exactly the same way.  Form values are
 the raw strings a user typed; numbers go through :func:`safe_number`.
+
+The typed expressions are stored next to the evaluated numbers
+(``model["form_expressions"]`` and ``geometry["site_expressions"]``) so a
+change to a Global Definitions parameter re-evaluates the whole component,
+as in COMSOL.  The solver only ever sees the evaluated numbers.
 """
 
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any
+import keyword
+from typing import Any, Mapping
 
 import numpy as np
 
 from ..motifs import triangular_motifs
 from ..units import LENGTH_UNITS
 from .geometry_editor import (
-    canonical_shape, editor_value, epsilon_from_editor, model_name, safe_number, shape_choice, uniaxial_matrix,
+    GeometryExpressionError, canonical_shape, editor_value, epsilon_from_editor, model_name, safe_number, shape_choice,
+    uniaxial_matrix,
 )
+
+
+Variables = Mapping[str, float] | None
+RESERVED_NAMES = {"pi", "sqrt", "root"}
+MODEL_FORM_KEYS = ("lattice", "actual_a", "length_unit", "material_representation", "background", "basis_policy",
+                   "deformation", "factor", "angle", "basis", "affine", "tx", "ty", "geometry_scale")
+
+
+class ParameterError(ValueError):
+    def __init__(self, index: int, field: str, message: str):
+        super().__init__(f"Parameter {index + 1} · {field}: {message}")
+        self.index = index
+        self.field = field
+
+
+def evaluate_parameters(parameters: list[dict[str, Any]] | None) -> dict[str, float]:
+    """Evaluate Global Definitions in order; later rows may use earlier ones."""
+
+    values: dict[str, float] = {}
+    for index, row in enumerate(parameters or []):
+        name = str(row.get("name", "")).strip()
+        if not name.isidentifier() or keyword.iskeyword(name) or name in RESERVED_NAMES:
+            raise ParameterError(index, "name", f"'{name}' is not a valid parameter name")
+        if name in values:
+            raise ParameterError(index, "name", f"duplicate parameter '{name}'")
+        try:
+            values[name] = safe_number(row.get("expression", ""), values)
+        except GeometryExpressionError as exc:
+            raise ParameterError(index, "expression", str(exc)) from exc
+    return values
 
 
 TRIANGULAR_BASIS = [[0.5, 0.5], [float(np.sqrt(3) / 2), float(-np.sqrt(3) / 2)]]
@@ -49,6 +86,11 @@ def model_form(model: dict[str, Any], ui_state: dict[str, Any] | None = None) ->
     state = ui_state or {}
     unit = state.get("length_unit", "nm")
     representation = state.get("material_representation", "n")
+    stored = model.get("form_expressions")
+    if stored and stored.get("length_unit") == unit and stored.get("material_representation") == representation:
+        # Show what the user typed (it may reference parameters).
+        return {**{key: deepcopy(stored[key]) for key in MODEL_FORM_KEYS if key in stored},
+                "lattice_summary": LATTICE_SUMMARY.get(stored.get("lattice", "triangular"), "")}
     geometry = model["geometry"]
     deformation = model.get("deformation", {})
     basis = np.asarray(model.get("direct_basis", TRIANGULAR_BASIS), dtype=float).reshape(-1)
@@ -74,15 +116,18 @@ def model_form(model: dict[str, Any], ui_state: dict[str, Any] | None = None) ->
     }
 
 
-def apply_model_form(model: dict[str, Any], form: dict[str, Any]) -> dict[str, Any]:
+def apply_model_form(model: dict[str, Any], form: dict[str, Any], variables: Variables = None) -> dict[str, Any]:
     """Return an updated model from form strings (the old Qt `_sync_model`)."""
+
+    def num(value: Any) -> float:
+        return safe_number(value, variables)
 
     model = deepcopy(model)
     geometry = model["geometry"]
     lattice = str(form.get("lattice", model.get("lattice", "triangular")))
     if lattice not in LATTICE_SUMMARY:
         raise ValueError("lattice must be triangular, square, or custom")
-    scale = safe_number(form.get("geometry_scale", model.get("lattice_constant", 1)))
+    scale = num(form.get("geometry_scale", model.get("lattice_constant", 1)))
     if scale <= 0:
         raise ValueError("Geometry scale must be positive")
     if lattice == "triangular":
@@ -90,35 +135,36 @@ def apply_model_form(model: dict[str, Any], form: dict[str, Any]) -> dict[str, A
     elif lattice == "square":
         direct = deepcopy(SQUARE_BASIS)
     else:
-        direct = np.asarray([safe_number(value) for value in form["basis"]], dtype=float).reshape(2, 2).tolist()
+        direct = np.asarray([num(value) for value in form["basis"]], dtype=float).reshape(2, 2).tolist()
     kind = str(form.get("deformation", "none"))
-    factor = safe_number(form.get("factor", 1.0))
-    angle = safe_number(form.get("angle", 0.0))
+    factor = num(form.get("factor", 1.0))
+    angle = num(form.get("angle", 0.0))
     if kind == "none":
         linear = np.eye(2)
     elif kind == "uniaxial":
         linear = uniaxial_matrix(factor, angle)
     elif kind == "custom":
-        linear = np.asarray([safe_number(value) for value in form["affine"]], dtype=float).reshape(2, 2)
+        linear = np.asarray([num(value) for value in form["affine"]], dtype=float).reshape(2, 2)
     else:
         raise ValueError("deformation must be none, uniaxial, or custom")
     if abs(float(np.linalg.det(linear))) < 1e-14:
         raise ValueError("Affine matrix must be non-singular")
-    translation = [safe_number(form.get("tx", 0)), safe_number(form.get("ty", 0))]
+    translation = [num(form.get("tx", 0)), num(form.get("ty", 0))]
     unit = str(form.get("length_unit", "nm"))
     actual_text = str(form.get("actual_a", "")).strip()
-    actual_length = None if not actual_text else safe_number(actual_text) * LENGTH_UNITS[unit]
+    actual_length = None if not actual_text else num(actual_text) * LENGTH_UNITS[unit]
     if actual_length is not None and actual_length <= 0:
         raise ValueError("Actual lattice constant must be positive")
     policy = str(form.get("basis_policy", "auto"))
     if policy not in {"auto", "native"}:
         raise ValueError("basis policy must be auto or native")
     model.update({"lattice": lattice, "lattice_constant": scale, "actual_lattice_constant_m": actual_length, "direct_basis": direct, "basis_policy": policy})
-    geometry["epsilon_background"] = epsilon_from_editor(form.get("background", 2.7), str(form.get("material_representation", "n")))
+    geometry["epsilon_background"] = epsilon_from_editor(form.get("background", 2.7), str(form.get("material_representation", "n")), variables)
     model["deformation"] = {"kind": kind, "factor": factor, "angle_degrees": angle, "linear": linear.tolist(), "translation": translation}
     model["affine"] = {"linear": linear.tolist(), "translation": translation}
     model["name"] = model_name(lattice, motifs(model))
     geometry["name"] = model["name"]
+    model["form_expressions"] = {key: deepcopy(form[key]) for key in MODEL_FORM_KEYS if key in form}
     return model
 
 
@@ -126,8 +172,11 @@ SITE_FIELDS = ("name", "shape", "radius", "rotation", "center_x", "center_y", "m
 
 
 def site_rows(model: dict[str, Any], representation: str) -> list[dict[str, str]]:
-    """Render motifs as editable site-table rows."""
+    """Render motifs as editable site-table rows (stored expressions first)."""
 
+    stored = model["geometry"].get("site_expressions")
+    if stored and stored.get("representation") == representation and len(stored.get("rows", [])) == len(motifs(model)):
+        return deepcopy(stored["rows"])
     rows = []
     for motif in motifs(model):
         rows.append(_site_row(motif, representation))
@@ -147,19 +196,19 @@ def _site_row(motif: dict[str, Any], representation: str) -> dict[str, str]:
     }
 
 
-def parse_site_row(row: dict[str, Any], index: int, representation: str) -> dict[str, Any]:
+def parse_site_row(row: dict[str, Any], index: int, representation: str, variables: Variables = None) -> dict[str, Any]:
     """Parse one table row; errors name the site and field for the client."""
 
     field = "shape"
     try:
         shape = str(row.get("shape", "Circle"))
         field = "sides"
-        raw_sides = row.get("sides") if shape == "Regular polygon" else {"Circle": 0, "Triangle": 3, "Square": 4}.get(shape, 0)
+        raw_sides = safe_number(row.get("sides"), variables) if shape == "Regular polygon" else {"Circle": 0, "Triangle": 3, "Square": 4}.get(shape, 0)
         kind, sides = canonical_shape(shape, raw_sides)
         values = {}
         for key in ("radius", "rotation", "center_x", "center_y", "material"):
             field = key
-            values[key] = 0.0 if shape == "Circle" and key == "rotation" else safe_number(row.get(key, ""))
+            values[key] = 0.0 if shape == "Circle" and key == "rotation" else safe_number(row.get(key, ""), variables)
         if values["radius"] <= 0:
             field = "radius"
             raise ValueError("must be positive")
@@ -171,7 +220,7 @@ def parse_site_row(row: dict[str, Any], index: int, representation: str) -> dict
             "kind": kind, "radius": values["radius"], "sides": sides,
             "angle_degrees": 0.0 if kind == "circle" else values["rotation"],
             "center": [values["center_x"], values["center_y"]],
-            "epsilon": epsilon_from_editor(values["material"], representation),
+            "epsilon": epsilon_from_editor(values["material"], representation, variables),
         }
     except Exception as exc:
         raise SiteError(index, field, str(exc)) from exc
@@ -184,12 +233,12 @@ class SiteError(ValueError):
         self.field = field
 
 
-def apply_site_rows(model: dict[str, Any], rows: list[dict[str, Any]], representation: str) -> dict[str, Any]:
+def apply_site_rows(model: dict[str, Any], rows: list[dict[str, Any]], representation: str, variables: Variables = None) -> dict[str, Any]:
     """Replace the model's motifs with parsed rows (the old Sites dialog accept)."""
 
     if not rows:
         raise ValueError("add at least one site")
-    parsed = [parse_site_row(row, index, representation) for index, row in enumerate(rows)]
+    parsed = [parse_site_row(row, index, representation, variables) for index, row in enumerate(rows)]
     model = deepcopy(model)
     geometry = model["geometry"]
     first = parsed[0]
@@ -199,17 +248,31 @@ def apply_site_rows(model: dict[str, Any], rows: list[dict[str, Any]], represent
     })
     model["name"] = model_name(model.get("lattice", "triangular"), parsed)
     geometry["name"] = model["name"]
+    geometry["site_expressions"] = {"representation": representation, "rows": [{key: str(row.get(key, "")) for key in SITE_FIELDS} for row in rows]}
     return model
 
 
-def add_site_row(model: dict[str, Any], rows: list[dict[str, Any]], representation: str) -> list[dict[str, str]]:
+
+def reevaluate_model(model: dict[str, Any], variables: Variables) -> dict[str, Any]:
+    """Re-evaluate stored form and site expressions after a parameter change."""
+
+    stored_form = model.get("form_expressions")
+    if stored_form:
+        model = apply_model_form(model, stored_form, variables)
+    stored_sites = model["geometry"].get("site_expressions")
+    if stored_sites:
+        model = apply_site_rows(model, stored_sites["rows"], stored_sites["representation"], variables)
+    return model
+
+
+def add_site_row(model: dict[str, Any], rows: list[dict[str, Any]], representation: str, variables: Variables = None) -> list[dict[str, str]]:
     """Append a site; a second triangular site splits into a honeycomb pair."""
 
     rows = [dict(row) for row in rows]
     new = {"name": f"Site {len(rows) + 1}", "kind": "circle", "radius": 0.2, "angle_degrees": 0.0, "center": [0.5, 0.0], "epsilon": 1.0, "sides": 0}
     if model.get("lattice") == "triangular" and len(rows) == 1:
         try:
-            first = parse_site_row(rows[0], 0, representation)
+            first = parse_site_row(rows[0], 0, representation, variables)
             scale = float(model.get("lattice_constant", 1.0))
             if np.allclose(first["center"], np.asarray([0.5, 0.0]) * scale, rtol=0, atol=1e-12):
                 locations = triangular_motifs((first["radius"], first["radius"]), (first["angle_degrees"], first["angle_degrees"]), kind=first["kind"], sides=first["sides"] or 3, epsilon=first["epsilon"], scale=scale)

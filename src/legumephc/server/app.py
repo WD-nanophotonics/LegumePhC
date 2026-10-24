@@ -1,18 +1,27 @@
 """Localhost-only HTTP backend for the LegumePhC web Studio.
 
-Every route delegates to the toolkit-independent Studio layer
-(:mod:`legumephc.studio.project`, ``forms``, ``preview``, ``inspection``,
-``plotting`` and ``worker``).  Calculations always run in the exact worker
-child process; nothing here re-implements a solver.
+Projects are single-file ``.lphc`` documents (see
+:mod:`legumephc.studio.document`).  Each open document is unpacked into a
+private workspace; studies compute into that workspace without saving first
+(as in COMSOL) and *Save* packs it back into the one file.
+
+Every route delegates to the toolkit-independent Studio layer.  Calculations
+always run in the exact worker child process; nothing here re-implements a
+solver.
 """
 
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from copy import deepcopy
+from dataclasses import dataclass
 import json
 from pathlib import Path
+import shutil
+import tempfile
 from typing import Any
+import uuid
 
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request
@@ -21,13 +30,16 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from ..studio import forms
+from ..studio.document import (
+    LPHC_SUFFIX, DocumentError, attach_solution, clear_solution, convert_legacy_project, new_workspace,
+    normalize_document_project, open_document, read_document_meta, save_document, write_workspace_project,
+)
 from ..studio.inspection import record_view
 from ..studio.plotting import export_figure, plot_record, sample_cell_polygons
 from ..studio.preview import preview_geometry
 from ..studio.project import (
     PRESET_SUFFIX, PROJECT_SUFFIX, add_calculation, apply_preset, copy_calculation, delete_calculation, load_preset,
-    load_project, new_preset, new_project, record_available, rename_calculation, save_preset, save_project,
-    validate_project,
+    new_preset, new_project, project_records_dir, rename_calculation, save_preset,
 )
 from ..studio.worker import build_worker_request
 from ..units import frequency_factor
@@ -41,21 +53,48 @@ PREVIEW_VIEWS = ("unit_cell", "motif_array", "lattice_sites", "reciprocal_bz", "
 MAX_VIEW_ARRAY = 20000
 
 
+@dataclass
+class OpenDocument:
+    id: str
+    workspace: Path
+    path: Path | None
+
+
 class ProjectBody(BaseModel):
-    path: str | None = None
     project: dict[str, Any]
+
+
+class OpenBody(BaseModel):
+    path: str
+
+
+class SaveBody(BaseModel):
+    project: dict[str, Any]
+    path: str | None = None
+
+
+class AttachBody(BaseModel):
+    project: dict[str, Any]
+    entry: dict[str, Any]
+
+
+class ClearBody(BaseModel):
+    project: dict[str, Any]
+    calculation_id: str | None = None
 
 
 class ModelFormBody(BaseModel):
     model: dict[str, Any]
     form: dict[str, Any] = Field(default_factory=dict)
     ui_state: dict[str, Any] = Field(default_factory=dict)
+    parameters: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class SitesBody(BaseModel):
     model: dict[str, Any]
     rows: list[dict[str, Any]] = Field(default_factory=list)
     representation: str = "n"
+    parameters: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class PreviewBody(BaseModel):
@@ -72,7 +111,6 @@ class CalculationBody(BaseModel):
 
 
 class RecordBody(BaseModel):
-    path: str
     record: str
     style: dict[str, Any] = Field(default_factory=dict)
     fmt: str = "png"
@@ -85,49 +123,65 @@ class PresetBody(BaseModel):
     ui_state: dict[str, Any] = Field(default_factory=dict)
 
 
-def create_app(projects_dir: str | Path | None = None, *, worker_cwd: str | Path | None = None) -> FastAPI:
+def create_app(projects_dir: str | Path | None = None, *, worker_cwd: str | Path | None = None, workspace_root: str | Path | None = None) -> FastAPI:
     projects = Path(projects_dir or ROOT / "projects").resolve()
     presets = projects / "presets"
+    workspaces = Path(workspace_root or Path(tempfile.gettempdir()) / "legumephc-studio" / uuid.uuid4().hex[:8]).resolve()
     registry = RunRegistry(Path(worker_cwd or ROOT).resolve())
-    app = FastAPI(title="LegumePhC Studio", docs_url="/api/docs", openapi_url="/api/openapi.json")
+    documents: dict[str, OpenDocument] = {}
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        yield
+        for run in list(registry.runs.values()):
+            if run.state == "running":
+                registry.cancel(run.id)
+        shutil.rmtree(workspaces, ignore_errors=True)
+
+    app = FastAPI(title="LegumePhC Studio", docs_url="/api/docs", openapi_url="/api/openapi.json", lifespan=lifespan)
     app.state.projects_dir = projects
     app.state.runs = registry
+    app.state.documents = documents
 
     @app.exception_handler(ValueError)
     async def _value_error(_request: Request, exc: ValueError) -> JSONResponse:
         payload: dict[str, Any] = {"detail": str(exc)}
+        if isinstance(exc, (forms.SiteError, forms.ParameterError)):
+            payload.update({"index": exc.index, "field": exc.field})
         if isinstance(exc, forms.SiteError):
-            payload.update({"site_index": exc.index, "field": exc.field})
+            payload["site_index"] = exc.index
         return JSONResponse(status_code=422, content=payload)
 
-    def project_file(path: str | None, *, must_exist: bool = True) -> Path:
-        if not path:
-            raise HTTPException(400, "save the project first")
+    def inside_projects(path: str, suffix: str) -> Path:
         candidate = Path(path)
         target = (candidate if candidate.is_absolute() else projects / candidate).resolve()
         try:
             target.relative_to(projects)
         except ValueError as exc:
-            raise HTTPException(403, "projects must live inside the Studio projects folder") from exc
-        if not target.name.endswith(PROJECT_SUFFIX):
-            target = target.with_name(target.name + PROJECT_SUFFIX)
-        if must_exist and not target.is_file():
-            raise HTTPException(404, f"project not found: {path}")
+            raise HTTPException(403, "documents must live inside the Studio projects folder") from exc
+        if not target.name.endswith(suffix):
+            target = target.with_name(target.name + suffix)
         return target
 
     def relative(path: Path) -> str:
         return str(path.relative_to(projects)).replace("\\", "/")
 
-    def record_directory(body: RecordBody) -> Path:
-        target = project_file(body.path)
-        project = load_project(target)
-        entry = next((item for item in project.get("results", []) if item["record_reference"]["path"] == body.record), None)
-        if entry is None:
-            raise HTTPException(404, "result is not part of this project")
-        available, reason = record_available(target.parent, entry["record_reference"])
-        if not available:
-            raise HTTPException(409, f"result unavailable: {reason}")
-        return target.parent / entry["record_reference"]["path"]
+    def document(doc_id: str) -> OpenDocument:
+        found = documents.get(doc_id)
+        if found is None:
+            raise HTTPException(404, "document is not open (the server may have restarted); reopen it")
+        return found
+
+    def register(workspace: Path, path: Path | None) -> OpenDocument:
+        doc = OpenDocument(uuid.uuid4().hex[:12], workspace, path)
+        documents[doc.id] = doc
+        return doc
+
+    def opened(doc: OpenDocument, project: dict[str, Any], **extra: Any) -> dict[str, Any]:
+        return {"doc_id": doc.id, "path": relative(doc.path) if doc.path else None, "project": dict(project), **extra}
+
+    def variables(parameters: list[dict[str, Any]]) -> dict[str, float]:
+        return forms.evaluate_parameters(parameters)
 
     # ------------------------------------------------------------------ meta
     @app.get("/api/meta")
@@ -140,51 +194,98 @@ def create_app(projects_dir: str | Path | None = None, *, worker_cwd: str | Path
             "length_units": ["nm", "μm", "m"],
             "shapes": ["Circle", "Triangle", "Square", "Regular polygon"],
             "projects_dir": str(projects),
-            "project_suffix": PROJECT_SUFFIX,
+            "document_suffix": LPHC_SUFFIX,
         }
 
-    # -------------------------------------------------------------- projects
+    # ------------------------------------------------------------- documents
     @app.get("/api/projects")
     def list_projects() -> list[dict[str, Any]]:
         if not projects.is_dir():
             return []
-        items = sorted(projects.rglob(f"*{PROJECT_SUFFIX}"), key=lambda item: item.stat().st_mtime, reverse=True)
-        return [{"path": relative(item), "name": item.name[: -len(PROJECT_SUFFIX)], "modified": item.stat().st_mtime} for item in items]
+        items: list[dict[str, Any]] = []
+        for path in projects.rglob(f"*{LPHC_SUFFIX}"):
+            try:
+                info = read_document_meta(path)
+            except Exception:  # unreadable file still listed, opening reports why
+                info = {}
+            items.append({"path": relative(path), "name": path.name[: -len(LPHC_SUFFIX)], "kind": "document", "modified": path.stat().st_mtime,
+                          "size": path.stat().st_size, "saved_at": info.get("saved_at"), "studies": info.get("studies"), "results": info.get("record_count")})
+        for path in projects.glob(f"*{PROJECT_SUFFIX}"):
+            converted = path.with_name(path.name[: -len(PROJECT_SUFFIX)] + LPHC_SUFFIX)
+            items.append({"path": relative(path), "name": path.name[: -len(PROJECT_SUFFIX)], "kind": "legacy", "modified": path.stat().st_mtime,
+                          "size": path.stat().st_size, "converted": converted.exists()})
+        return sorted(items, key=lambda item: item["modified"], reverse=True)
 
-    @app.post("/api/projects/new")
-    def create_project(name: str = "Untitled") -> dict[str, Any]:
-        return {"path": None, "project": dict(new_project(name))}
+    @app.post("/api/documents/new")
+    def new_document(name: str = "Untitled") -> dict[str, Any]:
+        doc = register(new_workspace(workspaces), None)
+        project = normalize_document_project(new_project(name))
+        write_workspace_project(doc.workspace, project)
+        return opened(doc, project)
 
-    @app.get("/api/projects/open")
-    def open_project(path: str) -> dict[str, Any]:
-        target = project_file(path)
-        return {"path": relative(target), "project": dict(load_project(target))}
+    @app.post("/api/documents/open")
+    def open_existing(body: OpenBody) -> dict[str, Any]:
+        converted_from = None
+        if body.path.endswith(PROJECT_SUFFIX):
+            legacy = inside_projects(body.path, PROJECT_SUFFIX)
+            if not legacy.is_file():
+                raise HTTPException(404, f"project not found: {body.path}")
+            target = legacy.with_name(legacy.name[: -len(PROJECT_SUFFIX)] + LPHC_SUFFIX)
+            if not target.exists():
+                convert_legacy_project(legacy, target)
+                converted_from = relative(legacy)
+        else:
+            target = inside_projects(body.path, LPHC_SUFFIX)
+        if not target.is_file():
+            raise HTTPException(404, f"document not found: {body.path}")
+        workspace = new_workspace(workspaces)
+        try:
+            project = open_document(target, workspace)
+        except (DocumentError, KeyError, ValueError):
+            shutil.rmtree(workspace, ignore_errors=True)
+            raise
+        return opened(register(workspace, target), project, converted_from=converted_from)
 
-    @app.post("/api/projects/save")
-    def save(body: ProjectBody) -> dict[str, Any]:
-        target = project_file(body.path or f"{body.project.get('name', 'Untitled')}{PROJECT_SUFFIX}", must_exist=False)
-        project = validate_project(body.project)
-        save_project(target, project)
-        return {"path": relative(target), "project": dict(load_project(target))}
+    @app.post("/api/documents/{doc_id}/save")
+    def save(doc_id: str, body: SaveBody) -> dict[str, Any]:
+        doc = document(doc_id)
+        target = inside_projects(body.path, LPHC_SUFFIX) if body.path else doc.path
+        if target is None:
+            raise HTTPException(400, "choose a document name")
+        project = save_document(doc.workspace, body.project, target)
+        doc.path = target
+        return opened(doc, project)
 
-    @app.post("/api/projects/validate")
-    def validate(body: ProjectBody) -> dict[str, Any]:
-        validate_project(body.project)
-        return {"ok": True}
+    @app.delete("/api/documents/{doc_id}")
+    def close(doc_id: str) -> dict[str, Any]:
+        doc = documents.pop(doc_id, None)
+        if doc is not None:
+            shutil.rmtree(doc.workspace, ignore_errors=True)
+        return {"closed": doc is not None}
+
+    @app.post("/api/documents/{doc_id}/attach")
+    def attach(doc_id: str, body: AttachBody) -> dict[str, Any]:
+        document(doc_id)
+        return {"project": attach_solution(body.project, body.entry)}
+
+    @app.post("/api/documents/{doc_id}/clear")
+    def clear(doc_id: str, body: ClearBody) -> dict[str, Any]:
+        document(doc_id)
+        return {"project": clear_solution(body.project, body.calculation_id)}
 
     # ---------------------------------------------------------- calculations
     @app.post("/api/calculations/add")
     def calc_add(body: CalculationBody) -> dict[str, Any]:
         project = deepcopy(body.project)
-        entry = add_calculation(project, name=body.name or "New calculation", operation=body.operation)
-        project["selected_node"] = {"kind": "calculation", "id": entry["id"]}
+        entry = add_calculation(project, name=body.name or forms.OPERATIONS.get(body.operation, "Study"), operation=body.operation)
+        project["selected_node"] = {"kind": "study", "id": entry["id"]}
         return {"project": project, "calculation": entry}
 
     @app.post("/api/calculations/copy")
     def calc_copy(body: CalculationBody) -> dict[str, Any]:
         project = deepcopy(body.project)
         entry = copy_calculation(project, body.calculation_id or "")
-        project["selected_node"] = {"kind": "calculation", "id": entry["id"]}
+        project["selected_node"] = {"kind": "study", "id": entry["id"]}
         return {"project": project, "calculation": entry}
 
     @app.post("/api/calculations/rename")
@@ -195,23 +296,33 @@ def create_app(projects_dir: str | Path | None = None, *, worker_cwd: str | Path
 
     @app.post("/api/calculations/delete")
     def calc_delete(body: CalculationBody) -> dict[str, Any]:
-        project = deepcopy(body.project)
-        project = delete_calculation(project, body.calculation_id or "")
-        return {"project": dict(project)}
+        project = clear_solution(body.project, body.calculation_id or "")
+        project = dict(delete_calculation(project, body.calculation_id or ""))
+        project["plot_groups"] = [group for group in project.get("plot_groups", []) if group.get("calculation_id") != body.calculation_id]
+        project["selected_node"] = {"kind": "study", "id": project["calculations"][0]["id"]}
+        return {"project": project}
 
     @app.post("/api/calculations/normalize")
     def calc_normalize(parameters: dict[str, Any]) -> dict[str, Any]:
         return forms.normalize_calculation(parameters)
 
-    # ---------------------------------------------------------------- model
+    # ------------------------------------------------- global definitions / model
+    @app.post("/api/parameters/apply")
+    def parameters_apply(body: ProjectBody) -> dict[str, Any]:
+        project = deepcopy(body.project)
+        values = variables(project.get("parameters", []))
+        project["model"] = forms.reevaluate_model(project["model"], values)
+        return {"project": project, "values": values}
+
     @app.post("/api/model/form")
     def model_form(body: ModelFormBody) -> dict[str, Any]:
         return forms.model_form(body.model, body.ui_state)
 
     @app.post("/api/model/apply")
     def model_apply(body: ModelFormBody) -> dict[str, Any]:
-        model = forms.apply_model_form(body.model, body.form)
-        return {"model": model, "form": forms.model_form(model, {**body.ui_state, "length_unit": body.form.get("length_unit", "nm"), "material_representation": body.form.get("material_representation", "n")})}
+        model = forms.apply_model_form(body.model, body.form, variables(body.parameters))
+        state = {**body.ui_state, "length_unit": body.form.get("length_unit", "nm"), "material_representation": body.form.get("material_representation", "n")}
+        return {"model": model, "form": forms.model_form(model, state)}
 
     @app.post("/api/sites/rows")
     def sites_rows(body: SitesBody) -> dict[str, Any]:
@@ -219,11 +330,11 @@ def create_app(projects_dir: str | Path | None = None, *, worker_cwd: str | Path
 
     @app.post("/api/sites/add")
     def sites_add(body: SitesBody) -> dict[str, Any]:
-        return {"rows": forms.add_site_row(body.model, body.rows, body.representation)}
+        return {"rows": forms.add_site_row(body.model, body.rows, body.representation, variables(body.parameters))}
 
     @app.post("/api/sites/apply")
     def sites_apply(body: SitesBody) -> dict[str, Any]:
-        model = forms.apply_site_rows(body.model, body.rows, body.representation)
+        model = forms.apply_site_rows(body.model, body.rows, body.representation, variables(body.parameters))
         return {"model": model, "rows": forms.site_rows(model, body.representation)}
 
     @app.post("/api/preview")
@@ -238,17 +349,16 @@ def create_app(projects_dir: str | Path | None = None, *, worker_cwd: str | Path
         return result
 
     # ----------------------------------------------------------------- runs
-    @app.post("/api/runs")
-    async def start_run(body: ProjectBody) -> dict[str, Any]:
-        target = project_file(body.path, must_exist=False)
-        project = validate_project(body.project)
-        save_project(target, project)
-        request = build_worker_request(load_project(target), target)
+    @app.post("/api/documents/{doc_id}/runs")
+    async def start_run(doc_id: str, body: ProjectBody) -> dict[str, Any]:
+        doc = document(doc_id)
+        project_path = write_workspace_project(doc.workspace, body.project)
+        request = build_worker_request(body.project, project_path)
         try:
-            run = registry.start(request, target)
+            run = registry.start(request, project_path)
         except RuntimeError as exc:
             raise HTTPException(409, str(exc)) from exc
-        return {"run_id": run.id, "path": relative(target)}
+        return {"run_id": run.id}
 
     @app.get("/api/runs/{run_id}")
     def run_state(run_id: str) -> dict[str, Any]:
@@ -289,9 +399,16 @@ def create_app(projects_dir: str | Path | None = None, *, worker_cwd: str | Path
         return {"run_id": run.id, "state": run.state}
 
     # -------------------------------------------------------------- records
-    @app.post("/api/records/view")
-    def view_record(body: RecordBody) -> dict[str, Any]:
-        directory = record_directory(body)
+    def record_directory(doc: OpenDocument, record: str) -> Path:
+        records = project_records_dir(doc.workspace / "project.json").resolve()
+        target = (doc.workspace / record).resolve()
+        if records not in target.parents or not (target / "config.json").is_file():
+            raise HTTPException(404, "result record not found in this document")
+        return target
+
+    @app.post("/api/documents/{doc_id}/records/view")
+    def view_record(doc_id: str, body: RecordBody) -> dict[str, Any]:
+        directory = record_directory(document(doc_id), body.record)
         style = body.style
         view = record_view(directory, frequency_unit=style.get("frequency_unit", "Normalized"), component_index=int(style.get("component_index", 0)), field_quantity=style.get("field_quantity", "energy_density"))
         # Rows already carry every inspected value; only small geometric
@@ -315,16 +432,19 @@ def create_app(projects_dir: str | Path | None = None, *, worker_cwd: str | Path
             **extra,
         }
 
-    @app.post("/api/records/export")
-    def export_record(body: RecordBody) -> FileResponse:
+    @app.post("/api/documents/{doc_id}/records/export")
+    def export_record(doc_id: str, body: RecordBody) -> Response:
         if body.fmt not in {"png", "svg", "pdf"}:
             raise HTTPException(400, "format must be png, svg or pdf")
-        directory = record_directory(body)
+        directory = record_directory(document(doc_id), body.record)
         style = {**body.style}
         figure = plot_record(directory, style)
-        target = directory / "figures" / f"result.{body.fmt}"
-        export_figure(figure, target, width_px=int(style.get("width_px", 900)), height_px=int(style.get("height_px", 600)), dpi=int(style.get("dpi", 100)))
-        return FileResponse(target, filename=f"{directory.name}.{body.fmt}")
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary) / f"figure.{body.fmt}"
+            export_figure(figure, target, width_px=int(style.get("width_px", 900)), height_px=int(style.get("height_px", 600)), dpi=int(style.get("dpi", 100)))
+            content = target.read_bytes()
+        media = {"png": "image/png", "svg": "image/svg+xml", "pdf": "application/pdf"}[body.fmt]
+        return Response(content, media_type=media, headers={"Content-Disposition": f'attachment; filename="{directory.name}.{body.fmt}"'})
 
     # -------------------------------------------------------------- presets
     @app.get("/api/presets")

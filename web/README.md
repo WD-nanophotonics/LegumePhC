@@ -20,7 +20,9 @@ npm run build
 | `src/operations/renderers.ts` | Plot families (`renderBandLines`, `renderMap`) |
 | `src/components/SpecForm.tsx` | Generic form renderers for field/style specs |
 | `src/components/Dialog.tsx` | In-app prompt/confirm dialogs |
-| `src/App.tsx` | Project state, run lifecycle (SSE), layout |
+| `src/components/ModelBuilder.tsx` | COMSOL-style tree (Global Definitions, Component, Studies, Results) |
+| `src/components/*Settings.tsx` | One settings panel per node kind |
+| `src/App.tsx` | Document state, compute lifecycle (SSE), three-pane layout |
 
 ## Adding a calculation
 

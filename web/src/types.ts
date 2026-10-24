@@ -77,9 +77,27 @@ export interface ResultEntry {
   record_reference: RecordReference;
   model_snapshot: Model;
   calculation_snapshot: CalculationParameters;
+  solved_at?: string;
   plot?: PlotStyle;
   display_state?: { pins: number[] };
 }
+
+export interface Parameter {
+  name: string;
+  expression: string;
+  description?: string;
+}
+
+/** A COMSOL-style plot group, bound to a study (it follows the study's solution). */
+export interface PlotGroup {
+  id: string;
+  name: string;
+  calculation_id: string;
+  style: PlotStyle;
+  pins: number[];
+}
+
+export type NodeKind = "parameters" | "component" | "study" | "dataset" | "plot";
 
 export interface Project {
   schema: string;
@@ -87,10 +105,24 @@ export interface Project {
   model: Model;
   calculations: Calculation[];
   results: ResultEntry[];
-  selected_node: { kind: "geometry" | "calculation" | "result"; id: string };
+  parameters: Parameter[];
+  plot_groups: PlotGroup[];
+  selected_node: { kind: NodeKind | string; id: string };
   selected_result: string | null;
   plot: PlotStyle;
   ui_state?: Record<string, unknown>;
+}
+
+export interface DocumentInfo {
+  path: string;
+  name: string;
+  kind: "document" | "legacy";
+  modified: number;
+  size: number;
+  saved_at?: string | null;
+  studies?: number | null;
+  results?: number | null;
+  converted?: boolean;
 }
 
 export interface ModelForm {
@@ -130,7 +162,7 @@ export interface Meta {
   length_units: string[];
   shapes: string[];
   projects_dir: string;
-  project_suffix: string;
+  document_suffix: string;
 }
 
 export interface InspectionRow {

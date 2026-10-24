@@ -40,9 +40,9 @@ export function BottomPanel({ view, result, selected, pins, onSelect, progress, 
   return (
     <section className="bottom">
       <div className="tabs">
-        <button className={tab === "inspector" ? "active" : ""} onClick={() => setTab("inspector")}>Data inspector</button>
-        <button className={tab === "details" ? "active" : ""} onClick={() => setTab("details")}>Result details</button>
-        <button className={tab === "log" ? "active" : ""} onClick={() => setTab("log")}>Progress / log</button>
+        <button className={tab === "inspector" ? "active" : ""} onClick={() => setTab("inspector")}>Table</button>
+        <button className={tab === "details" ? "active" : ""} onClick={() => setTab("details")}>Details</button>
+        <button className={tab === "log" ? "active" : ""} onClick={() => setTab("log")}>Messages</button>
         <div className="progress">
           <div className={`bar ${progress.running && progress.fraction == null ? "indeterminate" : ""}`}>
             <div style={{ width: `${Math.round((progress.fraction ?? (progress.running ? 0.3 : 0)) * 100)}%` }} />

@@ -97,8 +97,29 @@ run configuration, or:
 .venv\Scripts\python.exe -m legumephc.server --no-browser --port 8765
 ```
 
-Projects live in `projects/` (ignored user data). The built frontend is
-committed, so Node.js is only needed to change the UI:
+The Studio follows COMSOL's workflow and file model:
+
+- **One file per project.** A `.lphc` document (a zip) holds the model,
+  Global Definitions parameters, studies, every study's solution record and
+  the plot groups. Name it, copy it, reopen it later and everything is there.
+  Documents live in `projects/` (user data, not committed).
+- **Model Builder.** Global Definitions › Parameters → Component 1 (Lattice,
+  Deformation, Materials, Geometry · Sites) → Studies → Results (Datasets and
+  Plot Groups). Selecting a node opens its Settings; Graphics shows the
+  geometry or the selected plot.
+- **Parameters everywhere in the geometry.** Any geometry field accepts an
+  expression such as `r0*1.2`; changing a parameter re-evaluates the whole
+  component. The typed expressions are stored with the evaluated numbers.
+- **One solution per study.** *Compute* works on an unsaved document;
+  re-computing replaces the study's previous solution (duplicate the study to
+  keep both). *Save* packs only referenced records, so the file never grows
+  without bound; *Clear all solutions* shrinks it to the model alone.
+- **Old projects** (`.legumephc-studio.json` + `data/.studio/records`) are
+  converted into a sibling `.lphc` when opened; extra results of one
+  calculation become separate imported studies, and the originals are not
+  modified.
+
+The built frontend is committed, so Node.js is only needed to change the UI:
 
 ```powershell
 cd web
@@ -107,10 +128,12 @@ npm run dev     # Vite dev server on :5173, proxies /api to 127.0.0.1:8765
 npm run build   # type-checks and writes src/legumephc/server/static/
 ```
 
-The backend never solves in-process: `POST /api/runs` saves the project and
-starts the same exact `python -m legumephc.studio.worker` child; its JSON-line
-events stream to the browser over SSE and `DELETE /api/runs/{id}` terminates
-it. Interactive API docs are at `/api/docs`.
+The backend never solves in-process: each open document is unpacked into a
+private workspace, and `POST /api/documents/{id}/runs` starts the same exact
+`python -m legumephc.studio.worker` child there; its JSON-line events stream
+to the browser over SSE and `DELETE /api/runs/{id}` terminates it. Records
+inside a document stay immutable and hash-verified. Interactive API docs are
+at `/api/docs`.
 
 ## Direct study entrypoints
 
@@ -133,8 +156,8 @@ Berry result and never synthesize curvature.
 .venv\Scripts\python.exe studio.py
 ```
 
-Projects use the `.legumephc-studio.json` format and store only relative,
-hashed references to immutable JSON+NPZ records. Parameter presets use the
+Studio documents (`.lphc`) store their immutable JSON+NPZ records inside the
+file and reference them by relative path and SHA-256. Parameter presets use the
 separate `.legumephc-preset.json` format and never contain result references.
 Preview refreshes are solver-free; formal calculations run in one exact child
 process and can be cancelled without a background service. User-facing band
