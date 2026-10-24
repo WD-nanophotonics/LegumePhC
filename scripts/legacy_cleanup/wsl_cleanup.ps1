@@ -47,12 +47,41 @@ function Size-Of([string]$path) {
     return [math]::Round($sum / 1GB, 2)
 }
 
-function Remove-Tree([string]$path) {
-    if (Test-Path -LiteralPath $path -PathType Container) {
-        [System.IO.Directory]::Delete($path, $true)
-    } elseif (Test-Path -LiteralPath $path) {
-        Remove-Item -LiteralPath $path -Force
+$script:Failures = New-Object System.Collections.Generic.List[string]
+
+function Remove-Link([System.IO.FileSystemInfo]$item) {
+    # Linux symlinks appear over \\wsl.localhost as reparse points whose
+    # targets Windows often cannot resolve; delete the link itself.
+    try {
+        if ($item -is [System.IO.DirectoryInfo]) { [System.IO.Directory]::Delete($item.FullName, $false) } else { [System.IO.File]::Delete($item.FullName) }
+    } catch {
+        $quoted = '"' + $item.FullName + '"'
+        cmd.exe /s /c "del /f /q $quoted 2>nul & rmdir /q $quoted 2>nul" | Out-Null
+        if ([System.IO.File]::Exists($item.FullName) -or [System.IO.Directory]::Exists($item.FullName)) { throw }
     }
+}
+
+function Remove-Entry([System.IO.FileSystemInfo]$item) {
+    try {
+        if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+            Remove-Link $item
+        } elseif ($item -is [System.IO.DirectoryInfo]) {
+            foreach ($child in $item.GetFileSystemInfos()) { Remove-Entry $child }
+            [System.IO.Directory]::Delete($item.FullName, $false)
+        } else {
+            if ($item.Attributes -band [System.IO.FileAttributes]::ReadOnly) { $item.Attributes = [System.IO.FileAttributes]::Normal }
+            [System.IO.File]::Delete($item.FullName)
+        }
+    } catch {
+        $script:Failures.Add("$($item.FullName): $($_.Exception.Message)")
+    }
+}
+
+function Remove-Tree([string]$path) {
+    # Entry by entry: never follows links, and one stubborn entry is reported
+    # instead of aborting the whole cleanup.
+    $item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    if ($null -ne $item) { Remove-Entry $item }
 }
 
 if (-not (Test-Path -LiteralPath $WslHome)) { throw "WSL home not reachable: $WslHome (start the Ubuntu distro once)" }
@@ -135,11 +164,13 @@ foreach ($target in $targets) {
     Write-Host ("            {0}" -f $target.What) -ForegroundColor DarkGray
     if ($Apply -and $exists) {
         if ($target.ContentsOnly) {
-            Get-ChildItem -LiteralPath $target.Path -Force | ForEach-Object { Remove-Tree $_.FullName }
+            foreach ($child in (Get-Item -LiteralPath $target.Path -Force).GetFileSystemInfos()) { Remove-Entry $child }
         } else {
             Remove-Tree $target.Path
         }
-        Write-Host '            deleted' -ForegroundColor Green
+        $left = Test-Path -LiteralPath $target.Path
+        if ($target.ContentsOnly) { $left = @((Get-Item -LiteralPath $target.Path -Force).GetFileSystemInfos()).Count -gt 0 }
+        if ($left) { Write-Host '            partly deleted (see summary)' -ForegroundColor Yellow } else { Write-Host '            deleted' -ForegroundColor Green }
     }
 }
 Write-Host ("[caches ] {0} __pycache__/.pytest_cache/Zone.Identifier entries in project folders" -f @($caches).Count)
@@ -148,6 +179,13 @@ if ($Apply) { foreach ($cache in $caches) { Remove-Tree $cache } }
 if ($Apply -and (Test-Path -LiteralPath $bare)) {
     git -c safe.directory=* -C $bare worktree prune 2>$null
     Write-Host 'Pruned stale worktree metadata in MEPHC.git (pinned refs keep every commit).' -ForegroundColor Green
+}
+
+if ($script:Failures.Count) {
+    Write-Host ''
+    Write-Host "Could not delete $($script:Failures.Count) entries (first 10 below). Rerunning is safe; anything left" -ForegroundColor Yellow
+    Write-Host 'can also be removed from your Ubuntu terminal, e.g.  rm -rf ~/miniconda3/pkgs/*' -ForegroundColor Yellow
+    $script:Failures | Select-Object -First 10 | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkYellow }
 }
 
 Write-Host ''
