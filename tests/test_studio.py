@@ -275,19 +275,3 @@ def test_run_request_requires_saved_project_and_uses_project_sidecar(tmp_path):
     request = build_worker_request(project, path)
     assert Path(request["records_dir"]) == project_records_dir(path)
     assert Path(request["records_dir"]).is_relative_to(path.parent)
-
-
-def test_hidden_root_tk_smoke_when_available():
-    try:
-        import tkinter as tk
-    except ImportError as exc:
-        pytest.skip(f"Tk unavailable: {exc}")
-    try:
-        from legumephc.studio.ui import StudioApp
-        root = StudioApp()
-    except tk.TclError as exc:
-        pytest.skip(f"Tk unavailable: {exc}")
-    root.withdraw()
-    root.update_idletasks()
-    assert "Studio" in root.title()
-    root.destroy()

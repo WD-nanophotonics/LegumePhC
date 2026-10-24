@@ -1,9 +1,21 @@
 # LegumePhC
 
 Canonical Windows-native, pure-Python 2D platform using
-[Legume](https://legume.readthedocs.io/). MePhC/MPB/WSL are legacy read-only
-references only; this repository deliberately contains no Thin Flow, Courier,
-Meep, MPB, WSL, or dataset ledger.
+[Legume](https://legume.readthedocs.io/) for photonic crystals on affine
+(deformed) lattices: bands, fields, iso-frequency samples, gauge-invariant
+Berry/Wilson qualification and Berry dipoles. MePhC/MPB/WSL are legacy
+read-only references only; this repository deliberately contains no Thin
+Flow, Courier, Meep, MPB, WSL, or dataset ledger.
+
+The repository has two modules:
+
+| Module | Path | Role |
+|---|---|---|
+| Backend | `src/legumephc/` | Domain core (`Model2D`, `solve_bands`, `frequency_at_k`, Berry, EFS, fields, dipole), immutable records, the toolkit-independent Studio layer (`studio/`), and the localhost HTTP API (`server/`) |
+| Frontend | `web/` | React + TypeScript + Plotly browser UI, built into `src/legumephc/server/static/` |
+
+Conclusions of the retired MePhC research are summarised, with provenance and
+open leads, in [docs/legacy/](docs/legacy/README.md).
 
 ## PyCharm / Windows setup
 
@@ -74,11 +86,31 @@ the verified one-circle C4 model and Γ–X–M–Γ path.
 geometry, TE/TM solves, and reports symmetry `none`. The read-only
 `references/mpb/index.json` file is metadata only and is not read by studies.
 
-## Phase D Studio
+## Web Studio
 
-Launch the native PySide6/PyQtGraph Studio directly from PyCharm with the
-shared `Studio` run configuration.  The temporary `studio_legacy_tk.py`
-launcher remains available only during the Qt transition.
+The Studio is a browser UI served by a FastAPI backend bound to `127.0.0.1`
+only (no external service). Launch it from PyCharm with the shared `Studio`
+run configuration, or:
+
+```powershell
+.venv\Scripts\python.exe studio.py            # opens http://127.0.0.1:8765/
+.venv\Scripts\python.exe -m legumephc.server --no-browser --port 8765
+```
+
+Projects live in `projects/` (ignored user data). The built frontend is
+committed, so Node.js is only needed to change the UI:
+
+```powershell
+cd web
+npm ci
+npm run dev     # Vite dev server on :5173, proxies /api to 127.0.0.1:8765
+npm run build   # type-checks and writes src/legumephc/server/static/
+```
+
+The backend never solves in-process: `POST /api/runs` saves the project and
+starts the same exact `python -m legumephc.studio.worker` child; its JSON-line
+events stream to the browser over SSE and `DELETE /api/runs/{id}` terminates
+it. Interactive API docs are at `/api/docs`.
 
 ## Direct study entrypoints
 
@@ -108,13 +140,13 @@ Preview refreshes are solver-free; formal calculations run in one exact child
 process and can be cancelled without a background service. User-facing band
 labels are one-based and are mapped to the core's explicit zero-based API.
 
-The Qt Result view snaps to immutable raw samples even when Band markers are
-hidden. Hover shows the current frequency unit with six significant digits;
-click pins the value, `Copy Values` copies it, and the Data Inspector selects
-the same raw row. Berry interpolation remains a display option and its hover
-readout is explicitly tied to the nearest raw sample. Matplotlib remains the
-publication/export renderer, so resizing the interactive window does not
-change the configured export dimensions or DPI.
+The Result view plots immutable raw samples. Hover shows values in the
+current frequency unit; click selects a sample, Shift+click pins it, `Copy
+values` copies it, and the Data Inspector selects the same raw row. Berry maps
+default to raw sample-cell tiling with unqualified cells marked; interpolation
+is a display option only. Raw complex eigenvectors never leave the server.
+Matplotlib remains the publication/export renderer (PNG/SVG/PDF), so the
+browser window size does not change the configured export dimensions or DPI.
 
 ## Phase E acceptance
 

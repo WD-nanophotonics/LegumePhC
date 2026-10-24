@@ -1,6 +1,10 @@
-"""Thin launcher for the Windows-native LegumePhC Qt Studio."""
+"""Thin launcher for the LegumePhC web Studio (localhost only).
 
-from legumephc.studio.qt_ui import main
+Starts the FastAPI backend on 127.0.0.1 and opens the browser UI.
+Equivalent to ``python -m legumephc.server``.
+"""
+
+from legumephc.server.__main__ import main
 
 
 if __name__ == "__main__":

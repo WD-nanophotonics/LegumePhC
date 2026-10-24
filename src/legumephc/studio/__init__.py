@@ -1,4 +1,4 @@
-"""Windows-native Qt Studio and persistent LegumePhC project helpers."""
+"""Toolkit-independent Studio layer: projects, forms, preview, inspection, worker."""
 
 from .project import (
     PROJECT_SUFFIX,

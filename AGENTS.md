@@ -2,13 +2,22 @@
 
 LegumePhC is the Windows-native two-dimensional PWE primary platform. Work
 directly in the repository `.venv` with CPython 3.12 and Legume 1.0.3. Never
-invoke WSL, Meep, MPB, GME, Thin Flow, Courier, a service, or another worker.
+invoke WSL, Meep, MPB, GME, Thin Flow, Courier, an external service, or another
+worker. The one allowed server is the Studio web backend (`legumephc.server`),
+bound to `127.0.0.1` only; it runs calculations solely through the exact
+`legumephc.studio.worker` child process. The repository has two modules: the
+Python backend under `src/legumephc/` and the browser frontend under `web/`
+(React/TypeScript, built into `src/legumephc/server/static/`).
 
 The migration route is Phase A (trusted baseline and domain core) -> Phase B
 (Studio/API consumers) -> only then any production migration. Science remains
 the priority. The repository is a single `studies` workspace; old MPB data is
 read-only reference and may be used only when it is already public and
-explicitly identified. Do not copy local/private evidence into this repo.
+explicitly identified. Do not copy local/private evidence or raw legacy
+datasets into this repo; legacy findings may enter `docs/legacy/` only as
+written summaries and small numeric tables with provenance and their original
+qualification status. The WSL home may be *read* through `\\wsl.localhost`
+for migration only; never run `wsl.exe`.
 
 Use local branch `sandbox` only and push only `origin/sandbox`; never move
 `origin/main`. Preserve every scientific result directory. New immutable

@@ -10,7 +10,6 @@ from legumephc.geometry import Lattice2D
 from legumephc.studio.geometry_editor import GeometryExpressionError, canonical_shape, editor_value, epsilon_from_editor, model_name, safe_number, shape_choice, uniaxial_matrix
 from legumephc.studio.preview import preview_geometry
 from legumephc.studio.project import apply_preset, load_preset, new_preset, new_project, save_preset
-from legumephc.studio.ui import _dialog_location
 
 
 def test_safe_geometry_expressions_are_whitelisted():
@@ -78,14 +77,3 @@ def test_preset_round_trips_ui_state_without_results(tmp_path):
     updated = apply_preset(new_project("target"), loaded)
     assert updated["ui_state"]["material_representation"] == "n"
     assert "results" in updated and updated["results"] == []
-
-
-def test_dialog_locations_are_explicit_and_do_not_depend_on_cwd(tmp_path):
-    app = SimpleNamespace(project_path=tmp_path / "project.json")
-    directory, filename = _dialog_location(app, "project")
-    assert Path(directory) == tmp_path and filename == "project.json"
-    directory, _ = _dialog_location(SimpleNamespace(project_path=None), "preset")
-    assert Path(directory).name == "presets"
-    app.project = {"results": [{"id": "result-7", "record_reference": {"path": "data/.studio/records/frequency_at_k/abc"}}], "selected_result": "result-7"}
-    directory, _ = _dialog_location(app, "export", record_path=app.project["selected_result"])
-    assert Path(directory) == tmp_path / "data/.studio/records/frequency_at_k/abc/figures"

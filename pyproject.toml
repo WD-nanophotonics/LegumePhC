@@ -5,22 +5,25 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "legumephc"
 version = "0.1.0"
-description = "Windows-native Legume cross-validation for MePhC C3 physics"
+description = "Windows-native Legume PWE platform for affine 2D photonic crystals, with a localhost web Studio"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "legume-gme==1.0.3",
   "numpy>=1.26,<3",
   "scipy>=1.12,<2",
   "matplotlib>=3.8,<4",
-  "PySide6>=6.8,<7",
-  "pyqtgraph>=0.13.7,<0.15",
+  "fastapi>=0.115,<1",
+  "uvicorn>=0.30,<1",
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=8,<9"]
+test = ["pytest>=8,<9", "httpx>=0.27,<1"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+legumephc = ["server/static/*", "server/static/assets/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

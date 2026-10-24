@@ -9,3 +9,5 @@ studies/*/results/*
 !studies/*/results/.gitkeep
 acceptance/*
 !acceptance/.gitkeep
+.idea/
+web/node_modules/
