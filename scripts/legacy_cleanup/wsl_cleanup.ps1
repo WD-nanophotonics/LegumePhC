@@ -104,9 +104,18 @@ if ($heads.Count -and (Test-Path -LiteralPath $checkouts)) {
     $missing = @($heads | Where-Object { (git -c safe.directory=* -C $bare cat-file -t $_ 2>$null) -ne 'commit' })
     if ($missing.Count) { throw "bare repo is missing $($missing.Count) worktree commits (e.g. $($missing[0])); not deleting checkouts" }
     if ($Apply) {
-        $commands = $heads | ForEach-Object { "update refs/archive/worktrees/$_ $_" }
-        $commands | git -c safe.directory=* -C $bare update-ref --stdin
-        if ($LASTEXITCODE -ne 0) { throw 'pinning worktree commits failed' }
+        # Feed git a BOM-free, LF-terminated file through cmd redirection:
+        # Windows PowerShell's pipeline and process stdin add CRLF and a BOM,
+        # which `git update-ref --stdin` rejects.
+        $text = (($heads | ForEach-Object { "update refs/archive/worktrees/$_ $_" }) -join "`n") + "`n"
+        $commandFile = [System.IO.Path]::GetTempFileName()
+        try {
+            [System.IO.File]::WriteAllBytes($commandFile, [System.Text.Encoding]::ASCII.GetBytes($text))
+            $gitOutput = cmd.exe /s /c "git -c safe.directory=* -C `"$bare`" update-ref --stdin < `"$commandFile`" 2>&1"
+            if ($LASTEXITCODE -ne 0) { throw "pinning worktree commits failed: $gitOutput" }
+        } finally {
+            Remove-Item -LiteralPath $commandFile -Force -ErrorAction SilentlyContinue
+        }
         $pinned = @(git -c safe.directory=* -C $bare for-each-ref --format='%(refname)' refs/archive/worktrees).Count
         if ($pinned -lt $heads.Count) { throw "only $pinned of $($heads.Count) commits pinned" }
         Write-Host "  pinned $pinned commits under refs/archive/worktrees/" -ForegroundColor Green
